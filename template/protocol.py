@@ -18,59 +18,78 @@
 # DEALINGS IN THE SOFTWARE.
 
 import typing
+import pydantic
 import bittensor as bt
 
-# TODO(developer): Rewrite with your protocol definition.
 
-# This is the protocol for the dummy miner and validator.
-# It is a simple request-response protocol where the validator sends a request
-# to the miner, and the miner responds with a dummy response.
-
-# ---- miner ----
-# Example usage:
-#   def dummy( synapse: Dummy ) -> Dummy:
-#       synapse.dummy_output = synapse.dummy_input + 1
-#       return synapse
-#   axon = bt.axon().attach( dummy ).serve(netuid=...).start()
-
-# ---- validator ---
-# Example usage:
-#   dendrite = bt.dendrite()
-#   dummy_output = dendrite.query( Dummy( dummy_input = 1 ) )
-#   assert dummy_output == 2
-
-
-class Dummy(bt.Synapse):
+class Commit(bt.Synapse):
     """
-    A simple dummy protocol representation which uses bt.Synapse as its base.
-    This protocol helps in handling dummy request and response communication between
-    the miner and the validator.
-
-    Attributes:
-    - dummy_input: An integer value representing the input request sent by the validator.
-    - dummy_output: An optional integer value which, when filled, represents the response from the miner.
+    Commit protocol for Probity subnet.
+    Validator sends the event details, and Miner returns a commitment_hash.
     """
 
-    # Required request input, filled by sending dendrite caller.
-    dummy_input: int
+    # Input: Required request input, filled by sending validator caller.
+    event_id: str = pydantic.Field(
+        ...,
+        title="Event ID",
+        description="The unique identifier of the event.",
+        allow_mutation=False,
+    )
+    market_prob: float = pydantic.Field(
+        ...,
+        title="Market Probability",
+        description="The baseline market probability at the time of commit.",
+        allow_mutation=False,
+    )
+    commit_deadline: int = pydantic.Field(
+        ...,
+        title="Commit Deadline",
+        description="The Unix timestamp deadline for submitting this commit.",
+        allow_mutation=False,
+    )
 
-    # Optional request output, filled by receiving axon.
-    dummy_output: typing.Optional[int] = None
+    # Output: Optional request output, filled by receiving miner axon.
+    commitment_hash: typing.Optional[str] = pydantic.Field(
+        None,
+        title="Commitment Hash",
+        description="The SHA256 hash of the miner's prediction and a secret nonce.",
+    )
 
-    def deserialize(self) -> int:
+    def deserialize(self) -> typing.Optional[str]:
         """
-        Deserialize the dummy output. This method retrieves the response from
-        the miner in the form of dummy_output, deserializes it and returns it
-        as the output of the dendrite.query() call.
-
-        Returns:
-        - int: The deserialized response, which in this case is the value of dummy_output.
-
-        Example:
-        Assuming a Dummy instance has a dummy_output value of 5:
-        >>> dummy_instance = Dummy(dummy_input=4)
-        >>> dummy_instance.dummy_output = 5
-        >>> dummy_instance.deserialize()
-        5
+        Deserialize the commitment hash.
         """
-        return self.dummy_output
+        return self.commitment_hash
+
+
+class Reveal(bt.Synapse):
+    """
+    Reveal protocol for Probity subnet.
+    Validator sends the event id, and Miner returns the original probability and nonce.
+    """
+
+    # Input:
+    event_id: str = pydantic.Field(
+        ...,
+        title="Event ID",
+        description="The unique identifier of the event to reveal.",
+        allow_mutation=False,
+    )
+
+    # Output:
+    probability: typing.Optional[float] = pydantic.Field(
+        None,
+        title="Predicted Probability",
+        description="The miner's original predicted probability (between 0 and 1).",
+    )
+    nonce: typing.Optional[str] = pydantic.Field(
+        None,
+        title="Nonce",
+        description="The secret string used in the commitment hash.",
+    )
+
+    def deserialize(self) -> typing.Tuple[typing.Optional[float], typing.Optional[str]]:
+        """
+        Deserialize the original prediction and the nonce.
+        """
+        return self.probability, self.nonce

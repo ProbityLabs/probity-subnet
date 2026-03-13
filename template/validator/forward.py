@@ -18,9 +18,12 @@
 # DEALINGS IN THE SOFTWARE.
 
 import time
+import uuid
+import random
+import hashlib
 import bittensor as bt
 
-from template.protocol import Dummy
+from template.protocol import Commit, Reveal
 from template.validator.reward import get_rewards
 from template.utils.uids import get_random_uids
 
@@ -28,36 +31,78 @@ from template.utils.uids import get_random_uids
 async def forward(self):
     """
     The forward function is called by the validator every time step.
-
-    It is responsible for querying the network and scoring the responses.
-
-    Args:
-        self (:obj:`bittensor.neuron.Neuron`): The neuron object which contains all the necessary state for the validator.
-
+    In Probity, it consists of a Commit phase, a Reveal phase, and Scoring.
     """
-    # TODO(developer): Define how the validator selects a miner to query, how often, etc.
-    # get_random_uids is an example method, but you can replace it with your own.
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
+    axons = [self.metagraph.axons[uid] for uid in miner_uids]
 
-    # The dendrite client queries the network.
-    responses = await self.dendrite(
-        # Send the query to selected miner axons in the network.
-        axons=[self.metagraph.axons[uid] for uid in miner_uids],
-        # Construct a dummy query. This simply contains a single integer.
-        synapse=Dummy(dummy_input=self.step),
-        # All responses have the deserialize function called on them before returning.
-        # You are encouraged to define your own deserialization function.
+    # --- 1. Event Setup ---
+    # THIS IS JUST A SIMULATION. In a real implementation, the event details would come from an external source or oracle.
+    event_id = str(uuid.uuid4())
+    market_prob = random.uniform(0.1, 0.9)
+    # Simulate a future outcome (0 or 1)
+    outcome = 1 if random.random() < market_prob else 0
+
+    bt.logging.info(f"Started Event {event_id} with market_prob={market_prob}")
+
+    # --- 2. Commit Phase ---
+    commit_synapse = Commit(
+        event_id=event_id,
+        market_prob=market_prob,
+        commit_deadline=int(time.time()) + 10,
+    )
+    
+    commit_responses = await self.dendrite(
+        axons=axons,
+        synapse=commit_synapse,
         deserialize=True,
     )
+    
+    bt.logging.info(f"Received Commit hashes: {commit_responses}")
 
-    # Log the results for monitoring purposes.
-    bt.logging.info(f"Received responses: {responses}")
+    # Simulate waiting for the event to happen and the reveal target to arrive
+    time.sleep(2) 
 
-    # TODO(developer): Define how the validator scores responses.
-    # Adjust the scores based on responses from miners.
-    rewards = get_rewards(self, query=self.step, responses=responses)
+    # --- 3. Reveal Phase ---
+    reveal_synapse = Reveal(
+        event_id=event_id
+    )
+    
+    reveal_responses = await self.dendrite(
+        axons=axons,
+        synapse=reveal_synapse,
+        deserialize=True,
+    )
+    
+    bt.logging.info(f"Received Reveal responses: {reveal_responses}")
 
+    # --- 4. Validation and Scoring ---
+    valid_probabilities = []
+    
+    for commit_hash, reveal_tuple, axon in zip(commit_responses, reveal_responses, axons):
+        if not commit_hash or not reveal_tuple:
+            valid_probabilities.append(None)
+            continue
+            
+        prob, nonce = reveal_tuple
+        if prob is None or nonce is None:
+            valid_probabilities.append(None)
+            continue
+            
+        # Verify hash
+        data_to_hash = f"{prob}_{nonce}_{event_id}_{axon.hotkey}"
+        expected_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
+        
+        if expected_hash == commit_hash:
+            valid_probabilities.append(prob)
+        else:
+            bt.logging.warning(f"Hash mismatch for miner {axon.hotkey}!")
+            valid_probabilities.append(None)
+            
+    # Record rewards
+    rewards = get_rewards(self, p_market=market_prob, outcome=outcome, responses=valid_probabilities)
     bt.logging.info(f"Scored responses: {rewards}")
-    # Update the scores based on the rewards. You may want to define your own update_scores function for custom behavior.
+    
+    # Update scores
     self.update_scores(rewards, miner_uids)
     time.sleep(5)

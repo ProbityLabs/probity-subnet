@@ -39,32 +39,86 @@ class Miner(BaseMinerNeuron):
 
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
+        self.predictions = {} # Store our predictions temporarily.
 
-        # TODO(developer): Anything specific to your use case you can do here
+        # Re-attach multiple endpoints for Probity
+        # First we clear the default ones
+        self.axon.non_blocking_fns = []
+        self.axon.forward_fns = {}
+        self.axon.blacklist_fns = {}
+        self.axon.priority_fns = {}
+        self.axon.verify_fns = {}
 
-    async def forward(
-        self, synapse: template.protocol.Dummy
-    ) -> template.protocol.Dummy:
+        self.axon.attach(
+            forward_fn=self.forward_commit,
+            blacklist_fn=self.blacklist_commit,
+            priority_fn=self.priority_commit,
+        ).attach(
+            forward_fn=self.forward_reveal,
+            blacklist_fn=self.blacklist_reveal,
+            priority_fn=self.priority_reveal,
+        )
+
+    async def forward_commit(
+        self, synapse: template.protocol.Commit
+    ) -> template.protocol.Commit:
         """
-        Processes the incoming 'Dummy' synapse by performing a predefined operation on the input data.
-        This method should be replaced with actual logic relevant to the miner's purpose.
-
-        Args:
-            synapse (template.protocol.Dummy): The synapse object containing the 'dummy_input' data.
-
-        Returns:
-            template.protocol.Dummy: The synapse object with the 'dummy_output' field set to twice the 'dummy_input' value.
-
-        The 'forward' function is a placeholder and should be overridden with logic that is appropriate for
-        the miner's intended operation. This method demonstrates a basic transformation of input data.
+        Receives an event commit request, computes the probability,
+        hashes it with a nonce, and returns the hash.
         """
-        # TODO(developer): Replace with actual implementation logic.
-        synapse.dummy_output = synapse.dummy_input * 2
+        import hashlib
+        import random
+        # Dummy predictive logic: picking random probability based on market.
+        # In a real miner, you'd use models.
+        prob = max(0.01, min(0.99, synapse.market_prob + random.uniform(-0.1, 0.1)))
+        nonce = str(random.randint(1000000, 9999999))
+        
+        # Save securely so we can reveal it later
+        self.predictions[synapse.event_id] = {
+            "p": prob,
+            "nonce": nonce
+        }
+        
+        # Create hash
+        data_to_hash = f"{prob}_{nonce}_{synapse.event_id}_{self.wallet.hotkey.ss58_address}"
+        commitment_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
+        
+        synapse.commitment_hash = commitment_hash
+        bt.logging.info(f"Committed prediction for {synapse.event_id}: hash={commitment_hash}")
         return synapse
 
-    async def blacklist(
-        self, synapse: template.protocol.Dummy
-    ) -> typing.Tuple[bool, str]:
+    async def forward_reveal(
+        self, synapse: template.protocol.Reveal
+    ) -> template.protocol.Reveal:
+        """
+        Reveals the actual probability and nonce for a requested event.
+        """
+        if synapse.event_id in self.predictions:
+            synapse.probability = self.predictions[synapse.event_id]["p"]
+            synapse.nonce = self.predictions[synapse.event_id]["nonce"]
+            bt.logging.info(f"Revealed prediction for {synapse.event_id}: p={synapse.probability}, nonce={synapse.nonce}")
+        else:
+            synapse.probability = None
+            synapse.nonce = None
+            bt.logging.warning(f"No prediction found to reveal for {synapse.event_id}")
+        return synapse
+
+    async def blacklist_commit(self, synapse: template.protocol.Commit) -> typing.Tuple[bool, str]:
+        return await self.blacklist_base(synapse)
+        
+    async def priority_commit(self, synapse: template.protocol.Commit) -> float:
+        return await self.priority_base(synapse)
+
+    async def blacklist_reveal(self, synapse: template.protocol.Reveal) -> typing.Tuple[bool, str]:
+        return await self.blacklist_base(synapse)
+        
+    async def priority_reveal(self, synapse: template.protocol.Reveal) -> float:
+        return await self.priority_base(synapse)
+
+    async def blacklist_base(
+        self, synapse: bt.Synapse
+    ) -> typing.Tuple[bool, str]:  
+
         """
         Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
         define the logic for blacklisting requests based on your needs and desired security parameters.
@@ -126,7 +180,7 @@ class Miner(BaseMinerNeuron):
         )
         return False, "Hotkey recognized!"
 
-    async def priority(self, synapse: template.protocol.Dummy) -> float:
+    async def priority_base(self, synapse: bt.Synapse) -> float:
         """
         The priority function determines the order in which requests are handled. More valuable or higher-priority
         requests are processed before others. You should design your own priority mechanism with care.

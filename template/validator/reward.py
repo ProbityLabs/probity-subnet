@@ -17,39 +17,51 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 import numpy as np
-from typing import List
+from typing import List, Optional
 import bittensor as bt
+import math
 
 
-def reward(query: int, response: int) -> float:
+def log_loss(p: float, y: int) -> float:
+    eps = 1e-9
+    p = max(min(p, 1 - eps), eps)
+    return -(y * math.log(p) + (1 - y) * math.log(1 - p))
+
+def compute_skill(p_miner: float, p_market: float, outcome: int) -> float:
+    ll_miner = log_loss(p_miner, outcome)
+    ll_market = log_loss(p_market, outcome)
+    return ll_market - ll_miner
+
+def reward(p_miner: Optional[float], p_market: float, outcome: int) -> float:
     """
-    Reward the miner response to the dummy request. This method returns a reward
-    value for the miner, which is used to update the miner's score.
-
-    Returns:
-    - float: The reward value for the miner.
+    Reward the miner response using relative skill vs market baseline.
     """
-    bt.logging.info(
-        f"In rewards, query val: {query}, response val: {response}, rewards val: {1.0 if response == query * 2 else 0}"
-    )
-    return 1.0 if response == query * 2 else 0
-
+    if p_miner is None:
+        return 0.0 # No answer or invalid
+    
+    skill = compute_skill(p_miner, p_market, outcome)
+    return skill
 
 def get_rewards(
     self,
-    query: int,
-    responses: List[float],
+    p_market: float,
+    outcome: int,
+    responses: List[Optional[float]],
 ) -> np.ndarray:
     """
     Returns an array of rewards for the given query and responses.
-
-    Args:
-    - query (int): The query sent to the miner.
-    - responses (List[float]): A list of responses from the miner.
-
-    Returns:
-    - np.ndarray: An array of rewards for the given query and responses.
     """
-    # Get all the reward results by iteratively calling your reward() function.
-
-    return np.array([reward(query, response) for response in responses])
+    # Calculate rewards for all responses.
+    skills = [reward(resp, p_market, outcome) for resp in responses]
+    
+    # We can smooth it using some beta coefficient as per the whitepaper
+    beta = 5
+    weights = []
+    for skill in skills:
+        if skill <= 0:
+            weights.append(0.0) # We only reward positive skill vs market. Or we could track rolling skill.
+        else:
+            weights.append(math.exp(beta * skill))
+            
+    # return the scores
+    return np.array(weights, dtype=np.float32)
