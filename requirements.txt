@@ -1,3 +1,4 @@
+requests>=2.31
 starlette>=0.30.0
 pydantic>=2
 rich>=13

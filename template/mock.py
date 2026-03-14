@@ -62,7 +62,7 @@ class MockMetagraph:
     Lightweight mock metagraph. Avoids bt.Metagraph.sync() which is broken
     with MockSubtensor in bittensor 10.x.
     """
-    default_ip = "127.0.0.0"
+    default_ip = "127.0.0.1"
     default_port = 8091
 
     def __init__(self, netuid=1, network="mock", subtensor=None):
@@ -76,7 +76,7 @@ class MockMetagraph:
             hotkeys = [f"miner-hotkey-{i}" for i in range(1, 17)]
 
         n = len(hotkeys)
-        self.n = n
+        self.n = np.int64(n)   # .item() is called by get_random_uids
         self.hotkeys = hotkeys
         self.uids = np.arange(n, dtype=np.int64)
         self.S = np.ones(n, dtype=np.float32) * 100000
