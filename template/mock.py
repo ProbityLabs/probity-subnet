@@ -1,25 +1,47 @@
 import time
-
+import hashlib
 import asyncio
 import random
-import bittensor as bt
 
+import numpy as np
+import bittensor as bt
+from bittensor_wallet import Keypair
 from typing import List
+
+
+class MockWallet:
+    """
+    Minimal mock wallet for testing. hotkey/coldkey are actual Keypair objects
+    so they support both .ss58_address and .sign() (required by bt.Dendrite).
+    """
+    def __init__(self):
+        kp = Keypair.create_from_mnemonic(Keypair.generate_mnemonic())
+        self.hotkey = kp
+        self.coldkey = kp
+
+    def __str__(self):
+        return f"MockWallet(hotkey={self.hotkey.ss58_address})"
 
 
 class MockSubtensor(bt.MockSubtensor):
     def __init__(self, netuid, n=16, wallet=None, network="mock"):
+        # bt.MockSubtensor stores ALL instance state in __GLOBAL_MOCK_STATE__ (a
+        # module-level dict shared across every instance). Call reset() to wipe it
+        # before constructing this instance so each test gets a clean slate.
+        bt.MockSubtensor.reset()
         super().__init__(network=network)
 
-        if not self.subnet_exists(netuid):
+        # subnet_exists() uses MagicMock substrate so always returns truthy.
+        # Check chain_state directly instead.
+        if netuid not in self.chain_state["SubtensorModule"]["NetworksAdded"]:
             self.create_subnet(netuid)
 
         # Register ourself (the validator) as a neuron at uid=0
         if wallet is not None:
             self.force_register_neuron(
                 netuid=netuid,
-                hotkey=wallet.hotkey.ss58_address,
-                coldkey=wallet.coldkey.ss58_address,
+                hotkey_ss58=wallet.hotkey.ss58_address,
+                coldkey_ss58=wallet.coldkey.ss58_address,
                 balance=100000,
                 stake=100000,
             )
@@ -28,40 +50,75 @@ class MockSubtensor(bt.MockSubtensor):
         for i in range(1, n + 1):
             self.force_register_neuron(
                 netuid=netuid,
-                hotkey=f"miner-hotkey-{i}",
-                coldkey="mock-coldkey",
+                hotkey_ss58=f"miner-hotkey-{i}",
+                coldkey_ss58="mock-coldkey",
                 balance=100000,
                 stake=100000,
             )
 
 
-class MockMetagraph(bt.metagraph):
+class MockMetagraph:
+    """
+    Lightweight mock metagraph. Avoids bt.Metagraph.sync() which is broken
+    with MockSubtensor in bittensor 10.x.
+    """
+    default_ip = "127.0.0.0"
+    default_port = 8091
+
     def __init__(self, netuid=1, network="mock", subtensor=None):
-        super().__init__(netuid=netuid, network=network, sync=False)
+        self.netuid = netuid
+        self.network = network
 
         if subtensor is not None:
-            self.subtensor = subtensor
-        self.sync(subtensor=subtensor)
+            neurons = subtensor.neurons(netuid=netuid)
+            hotkeys = [n.hotkey for n in neurons]
+        else:
+            hotkeys = [f"miner-hotkey-{i}" for i in range(1, 17)]
 
-        for axon in self.axons:
-            axon.ip = "127.0.0.0"
-            axon.port = 8091
+        n = len(hotkeys)
+        self.n = n
+        self.hotkeys = hotkeys
+        self.uids = np.arange(n, dtype=np.int64)
+        self.S = np.ones(n, dtype=np.float32) * 100000
+        self.validator_permit = np.zeros(n, dtype=bool)
+        self.last_update = np.zeros(n, dtype=np.int64)
+        self.axons = [
+            bt.AxonInfo(
+                version=1,
+                ip=self.default_ip,
+                port=self.default_port,
+                ip_type=4,
+                hotkey=hk,
+                coldkey="mock-coldkey",
+            )
+            for hk in hotkeys
+        ]
+        bt.logging.info(f"MockMetagraph: {self}")
 
-        bt.logging.info(f"Metagraph: {self}")
-        bt.logging.info(f"Axons: {self.axons}")
+    def sync(self, subtensor=None):
+        pass  # no-op for mock
+
+    def __repr__(self):
+        return f"MockMetagraph(n={self.n}, netuid={self.netuid})"
 
 
-class MockDendrite(bt.dendrite):
+class MockDendrite(bt.Dendrite):
     """
-    Replaces a real bittensor network request with a mock request that just returns some static response for all axons that are passed and adds some random delay.
+    Mock dendrite for testing the Probity commit-reveal flow.
+    Simulates a miner that generates a random probability, commits a hash,
+    and reveals the probability + nonce on request.
     """
 
     def __init__(self, wallet):
-        super().__init__(wallet)
+        # bt.Dendrite expects a Wallet or Keypair. Pass the hotkey Keypair directly
+        # so self.keypair gets ss58_address AND sign() without needing a full Wallet.
+        super().__init__(wallet.hotkey)
+        # Store per-event predictions keyed by (axon_hotkey, event_id)
+        self._predictions: dict = {}
 
     async def forward(
         self,
-        axons: List[bt.axon],
+        axons: List[bt.AxonInfo],
         synapse: bt.Synapse = bt.Synapse(),
         timeout: float = 12,
         deserialize: bool = True,
@@ -71,52 +128,50 @@ class MockDendrite(bt.dendrite):
         if streaming:
             raise NotImplementedError("Streaming not implemented yet.")
 
-        async def query_all_axons(streaming: bool):
-            """Queries all axons for responses."""
+        from template.protocol import Commit, Reveal
 
-            async def single_axon_response(i, axon):
-                """Queries a single axon for a response."""
+        async def single_axon_response(axon):
+            start_time = time.time()
+            s = synapse.model_copy()
+            s = self.preprocess_synapse_for_request(axon, s, timeout)
 
-                start_time = time.time()
-                s = synapse.copy()
-                # Attach some more required data so it looks real
-                s = self.preprocess_synapse_for_request(axon, s, timeout)
-                # We just want to mock the response, so we'll just fill in some data
-                process_time = random.random()
-                if process_time < timeout:
-                    s.dendrite.process_time = str(time.time() - start_time)
-                    # Update the status code and status message of the dendrite to match the axon
-                    # TODO (developer): replace with your own expected synapse data
-                    s.dummy_output = s.dummy_input * 2
-                    s.dendrite.status_code = 200
-                    s.dendrite.status_message = "OK"
-                    synapse.dendrite.process_time = str(process_time)
-                else:
-                    s.dummy_output = 0
-                    s.dendrite.status_code = 408
-                    s.dendrite.status_message = "Timeout"
-                    synapse.dendrite.process_time = str(timeout)
+            process_time = random.uniform(0.01, 0.1)
+            if process_time < timeout:
+                s.dendrite.process_time = str(time.time() - start_time)
+                s.dendrite.status_code = 200
+                s.dendrite.status_message = "OK"
 
-                # Return the updated synapse object after deserializing if requested
-                if deserialize:
-                    return s.deserialize()
-                else:
-                    return s
+                # Handle Commit phase
+                if isinstance(s, Commit):
+                    prob = max(0.01, min(0.99, s.market_prob + random.uniform(-0.1, 0.1)))
+                    nonce = str(random.randint(1000000, 9999999))
+                    self._predictions[(axon.hotkey, s.event_id)] = {
+                        "p": prob,
+                        "nonce": nonce,
+                    }
+                    data_to_hash = f"{prob}_{nonce}_{s.event_id}_{axon.hotkey}"
+                    s.commitment_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
 
-            return await asyncio.gather(
-                *(
-                    single_axon_response(i, target_axon)
-                    for i, target_axon in enumerate(axons)
-                )
-            )
+                # Handle Reveal phase
+                elif isinstance(s, Reveal):
+                    key = (axon.hotkey, s.event_id)
+                    if key in self._predictions:
+                        s.probability = self._predictions[key]["p"]
+                        s.nonce = self._predictions[key]["nonce"]
+                    else:
+                        s.probability = None
+                        s.nonce = None
+            else:
+                s.dendrite.status_code = 408
+                s.dendrite.status_message = "Timeout"
 
-        return await query_all_axons(streaming)
+            if deserialize:
+                return s.deserialize()
+            return s
 
-    def __str__(self) -> str:
-        """
-        Returns a string representation of the Dendrite object.
+        return await asyncio.gather(
+            *(single_axon_response(axon) for axon in axons)
+        )
 
-        Returns:
-            str: The string representation of the Dendrite object in the format "dendrite(<user_wallet_address>)".
-        """
+    def __str__(self):
         return "MockDendrite({})".format(self.keypair.ss58_address)

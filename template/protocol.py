@@ -33,19 +33,19 @@ class Commit(bt.Synapse):
         ...,
         title="Event ID",
         description="The unique identifier of the event.",
-        allow_mutation=False,
+        frozen=True,
     )
     market_prob: float = pydantic.Field(
         ...,
         title="Market Probability",
         description="The baseline market probability at the time of commit.",
-        allow_mutation=False,
+        frozen=True,
     )
     commit_deadline: int = pydantic.Field(
         ...,
         title="Commit Deadline",
         description="The Unix timestamp deadline for submitting this commit.",
-        allow_mutation=False,
+        frozen=True,
     )
 
     # Output: Optional request output, filled by receiving miner axon.
@@ -73,7 +73,7 @@ class Reveal(bt.Synapse):
         ...,
         title="Event ID",
         description="The unique identifier of the event to reveal.",
-        allow_mutation=False,
+        frozen=True,
     )
 
     # Output:

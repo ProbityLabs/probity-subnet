@@ -59,6 +59,10 @@ class Miner(BaseMinerNeuron):
             priority_fn=self.priority_reveal,
         )
 
+    async def forward(self, synapse: bt.Synapse) -> bt.Synapse:
+        """Required by ABC. Routing is handled by forward_commit and forward_reveal."""
+        return synapse
+
     async def forward_commit(
         self, synapse: template.protocol.Commit
     ) -> template.protocol.Commit:
