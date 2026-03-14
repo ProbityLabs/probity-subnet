@@ -1,3 +1,25 @@
 python3 -m venv venv
 source venv/bin/activate
 pip install -e . --no-build-isolation
+
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+Setelah selesai, coba lagi:
+
+
+./scripts/localnet.sh
+
+nstall protoc dulu:
+
+
+sudo apt-get install protobuf-compiler
+Lalu compile ulang:
+
+
+./scripts/localnet.sh
+
+sudo apt-get install clang libclang-dev llvm-dev
+Lalu compile ulang:
+
+
+./scripts/localnet.sh

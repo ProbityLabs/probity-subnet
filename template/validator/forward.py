@@ -33,8 +33,12 @@ async def forward(self):
     The forward function is called by the validator every time step.
     In Probity, it consists of a Commit phase, a Reveal phase, and Scoring.
     """
-    miner_uids = get_random_uids(self, k=self.config.neuron.sample_size)
+    miner_uids = get_random_uids(self, k=self.config.neuron.sample_size, exclude=[self.uid])
     axons = [self.metagraph.axons[uid] for uid in miner_uids]
+
+    if len(miner_uids) == 0:
+        bt.logging.warning("No miners available to query.")
+        return
 
     # --- 1. Event Setup ---
     # THIS IS JUST A SIMULATION. In a real implementation, the event details would come from an external source or oracle.
@@ -43,7 +47,8 @@ async def forward(self):
     # Simulate a future outcome (0 or 1)
     outcome = 1 if random.random() < market_prob else 0
 
-    bt.logging.info(f"Started Event {event_id} with market_prob={market_prob}")
+    bt.logging.info(f"Querying {len(miner_uids)} miners: {miner_uids.tolist()}")
+    bt.logging.info(f"Started Event {event_id} | market_prob={market_prob:.4f} | outcome={outcome}")
 
     # --- 2. Commit Phase ---
     commit_synapse = Commit(
@@ -92,16 +97,18 @@ async def forward(self):
         # Verify hash
         data_to_hash = f"{prob}_{nonce}_{event_id}_{axon.hotkey}"
         expected_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
-        
+
         if expected_hash == commit_hash:
+            bt.logging.info(f"  ✓ {axon.hotkey[:8]}... hash verified | prob={prob:.4f}")
             valid_probabilities.append(prob)
         else:
-            bt.logging.warning(f"Hash mismatch for miner {axon.hotkey}!")
+            bt.logging.warning(f"  ✗ {axon.hotkey[:8]}... hash MISMATCH!")
             valid_probabilities.append(None)
-            
+
     # Record rewards
     rewards = get_rewards(self, p_market=market_prob, outcome=outcome, responses=valid_probabilities)
-    bt.logging.info(f"Scored responses: {rewards}")
+    bt.logging.info(f"Valid probs: {[round(p, 4) if p else None for p in valid_probabilities]}")
+    bt.logging.info(f"Rewards:     {rewards}")
     
     # Update scores
     self.update_scores(rewards, miner_uids)
