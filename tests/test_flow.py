@@ -10,6 +10,7 @@ The -s flag keeps stdout visible so you can follow each step.
 import asyncio
 import hashlib
 import math
+import time
 import uuid
 import random
 
@@ -54,7 +55,7 @@ def test_commit_reveal_flow(setup):
     commit_responses = asyncio.run(
         dendrite(
             axons,
-            synapse=Commit(event_id=event_id, market_prob=market_prob, commit_deadline=9999999999),
+            synapse=Commit(event_id=event_id, market_prob=market_prob, commit_deadline=int(time.time()) - 1),
             timeout=5,
             deserialize=True,
         )

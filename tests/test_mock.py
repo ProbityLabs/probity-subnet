@@ -38,7 +38,7 @@ def test_mock_dendrite_commit(n):
     async def run():
         return await dendrite(
             axons,
-            synapse=Commit(event_id="test-event-1", market_prob=0.6, commit_deadline=9999999999),
+            synapse=Commit(event_id="test-event-1", market_prob=0.6, commit_deadline=int(__import__("time").time()) - 1),
             timeout=5,
             deserialize=True,
         )
@@ -64,7 +64,7 @@ def test_mock_dendrite_reveal(n):
         # Must commit first so dendrite stores predictions
         await dendrite(
             axons,
-            synapse=Commit(event_id=event_id, market_prob=0.5, commit_deadline=9999999999),
+            synapse=Commit(event_id=event_id, market_prob=0.5, commit_deadline=int(__import__("time").time()) - 1),
             timeout=5,
             deserialize=True,
         )

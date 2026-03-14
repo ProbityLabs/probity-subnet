@@ -1,197 +1,165 @@
-# The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
-# Copyright © 2023 Probity Subnet
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
-# the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
-# and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all copies or substantial portions of
-# the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-# THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-# THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-# DEALINGS IN THE SOFTWARE.
-
-import time
 import hashlib
+import time
+
 import bittensor as bt
 
 from template.protocol import Commit, Reveal
-from template.validator.reward import get_rewards
+from template.validator.reward import get_rewards, RollingSkillTracker, compute_swpe
 from template.validator.event_source import fetch_active_events
 from template.validator.event_resolver import fetch_outcome
+from template.validator.event_pool import EventPool
 from template.utils.uids import get_random_uids
+
+# How long (seconds) miners have to commit before reveals are sent.
+# Override on the validator instance (self.commit_window_seconds) for tests.
+COMMIT_WINDOW_SECONDS = 30
 
 
 async def forward(self):
     """
-    The forward function is called by the validator every time step.
-    In Probity, it consists of:
-      1. Event Ingestion  — pick a live market from Polymarket
-      2. Commit Phase     — miners commit hashed predictions
-      3. Reveal Phase     — miners reveal predictions + nonces
-      4. Validation       — verify hashes
-      5. Scoring          — compute rewards and update scores
-      6. Event Resolution — (async) score past events when they resolve
+    Validator forward pass.
+
+    One pass handles all three event lifecycle stages in parallel:
+      1. Commit   — pick a new event, send Commit synapse to miners
+      2. Reveal   — for events past commit deadline, send Reveal + verify hashes
+      3. Score    — for revealed events whose outcome is now known, score + SWPE
     """
+    # ── Initialise persistent state ─────────────────────────────────────────
+    if not hasattr(self, "_event_pool"):
+        self._event_pool = EventPool()
+    if not hasattr(self, "_skill_tracker"):
+        self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n))
+
+    commit_window = getattr(self, "commit_window_seconds", COMMIT_WINDOW_SECONDS)
+
     miner_uids = get_random_uids(self, k=self.config.neuron.sample_size, exclude=[self.uid])
     axons = [self.metagraph.axons[uid] for uid in miner_uids]
 
+    # ── 1. Commit Phase ──────────────────────────────────────────────────────
     if len(miner_uids) == 0:
         bt.logging.warning("No miners available to query.")
-        return
-
-    # ── 1. Event Ingestion ──────────────────────────────────────────────────
-    events = fetch_active_events(limit=5)
-
-    if events:
-        event = events[0]
-        event_id   = event.event_id
-        market_prob = event.market_prob
-        bt.logging.info(
-            f"[Event] {event.question[:80]} | "
-            f"id={event_id[:12]}... | market_prob={market_prob:.4f}"
-        )
     else:
-        # Fallback: skip this round if Polymarket is unreachable
-        bt.logging.warning(
-            "Could not fetch live events from Polymarket. Skipping round."
+        events = fetch_active_events(limit=5)
+        if not events:
+            bt.logging.warning("Could not fetch live events from Polymarket.")
+        else:
+            # Add at most one new event per forward pass
+            for event in events:
+                if event.event_id in self._event_pool:
+                    continue
+
+                commit_deadline = int(time.time()) + commit_window
+                commit_synapse = Commit(
+                    event_id=event.event_id,
+                    market_prob=event.market_prob,
+                    commit_deadline=commit_deadline,
+                )
+                commit_responses = await self.dendrite(
+                    axons=axons,
+                    synapse=commit_synapse,
+                    deserialize=True,
+                )
+                self._event_pool.add(
+                    event_id=event.event_id,
+                    question=event.question,
+                    market_prob=event.market_prob,
+                    commit_deadline=commit_deadline,
+                    miner_uids=miner_uids.copy(),
+                    commit_hashes=list(commit_responses),
+                )
+                bt.logging.info(
+                    f"[Commit] {event.question[:60]} | "
+                    f"id={event.event_id[:12]}... | "
+                    f"miners={len(miner_uids)} | deadline+{commit_window}s"
+                )
+                break  # one new event per pass is enough
+
+    # ── 2. Reveal Phase ──────────────────────────────────────────────────────
+    for pooled in self._event_pool.ready_for_reveal():
+        reveal_axons = [self.metagraph.axons[uid] for uid in pooled.miner_uids]
+        reveal_synapse = Reveal(event_id=pooled.event_id)
+
+        reveal_responses = await self.dendrite(
+            axons=reveal_axons,
+            synapse=reveal_synapse,
+            deserialize=True,
         )
-        return
 
-    bt.logging.info(f"Querying {len(miner_uids)} miners: {miner_uids.tolist()}")
+        valid_probs = _verify_hashes(pooled, reveal_responses, reveal_axons)
+        self._event_pool.mark_revealed(pooled.event_id, valid_probs)
 
-    # ── 2. Commit Phase ─────────────────────────────────────────────────────
-    commit_synapse = Commit(
-        event_id=event_id,
-        market_prob=market_prob,
-        commit_deadline=int(time.time()) + 10,
-    )
+        n_valid = sum(1 for p in valid_probs if p is not None)
+        bt.logging.info(
+            f"[Reveal] {pooled.event_id[:12]}... "
+            f"valid={n_valid}/{len(valid_probs)}"
+        )
 
-    commit_responses = await self.dendrite(
-        axons=axons,
-        synapse=commit_synapse,
-        deserialize=True,
-    )
+    # ── 3. Score + SWPE ──────────────────────────────────────────────────────
+    for pooled in self._event_pool.ready_for_scoring():
+        resolved = fetch_outcome(pooled.event_id)
+        if resolved is None:
+            bt.logging.debug(f"[Score] {pooled.event_id[:12]}... not yet resolved")
+            continue
 
-    bt.logging.info(f"Received Commit hashes: {commit_responses}")
+        bt.logging.info(
+            f"[Score] {pooled.event_id[:12]}... outcome={resolved.outcome}"
+        )
 
-    # Give miners a moment before the reveal window opens
-    time.sleep(2)
+        rewards = get_rewards(
+            self,
+            p_market=pooled.market_prob,
+            outcome=resolved.outcome,
+            responses=pooled.valid_probabilities,
+            uids=pooled.miner_uids.tolist(),
+            skill_tracker=self._skill_tracker,
+        )
+        bt.logging.info(
+            f"  probs  : {[round(p, 4) if p else None for p in pooled.valid_probabilities]}"
+        )
+        bt.logging.info(f"  rewards: {[round(float(r), 4) for r in rewards]}")
 
-    # ── 3. Reveal Phase ─────────────────────────────────────────────────────
-    reveal_synapse = Reveal(event_id=event_id)
+        self.update_scores(rewards, pooled.miner_uids)
+        self._event_pool.mark_scored(pooled.event_id)
 
-    reveal_responses = await self.dendrite(
-        axons=axons,
-        synapse=reveal_synapse,
-        deserialize=True,
-    )
+        # SWPE — ensemble probability from skill-weighted miners
+        swpe = compute_swpe(
+            pooled.valid_probabilities,
+            pooled.miner_uids.tolist(),
+            self._skill_tracker,
+        )
+        if swpe is not None:
+            bt.logging.info(
+                f"[SWPE]  event={pooled.event_id[:12]}... "
+                f"ensemble={swpe:.4f} | outcome={resolved.outcome}"
+            )
 
-    bt.logging.info(f"Received Reveal responses: {reveal_responses}")
+    bt.logging.info(f"[Pool] {self._event_pool.summary()}")
+    self._event_pool.prune()
 
-    # ── 4. Hash Verification ────────────────────────────────────────────────
-    valid_probabilities = []
 
-    for commit_hash, reveal_tuple, axon in zip(commit_responses, reveal_responses, axons):
+def _verify_hashes(pooled, reveal_responses, axons) -> list:
+    """Verify each miner's revealed (prob, nonce) against their committed hash."""
+    valid_probs = []
+    for commit_hash, reveal_tuple, axon in zip(
+        pooled.commit_hashes, reveal_responses, axons
+    ):
         if not commit_hash or not reveal_tuple:
-            valid_probabilities.append(None)
+            valid_probs.append(None)
             continue
 
         prob, nonce = reveal_tuple
         if prob is None or nonce is None:
-            valid_probabilities.append(None)
+            valid_probs.append(None)
             continue
 
-        data_to_hash = f"{prob}_{nonce}_{event_id}_{axon.hotkey}"
-        expected_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
+        data = f"{prob}_{nonce}_{pooled.event_id}_{axon.hotkey}"
+        expected = hashlib.sha256(data.encode()).hexdigest()
 
-        if expected_hash == commit_hash:
-            bt.logging.info(f"  ✓ {axon.hotkey[:8]}... hash verified | prob={prob:.4f}")
-            valid_probabilities.append(prob)
+        if expected == commit_hash:
+            bt.logging.info(f"  ✓ {axon.hotkey[:8]}... prob={prob:.4f}")
+            valid_probs.append(prob)
         else:
-            bt.logging.warning(f"  ✗ {axon.hotkey[:8]}... hash MISMATCH!")
-            valid_probabilities.append(None)
+            bt.logging.warning(f"  ✗ {axon.hotkey[:8]}... hash MISMATCH")
+            valid_probs.append(None)
 
-    # ── 5. Event Resolution & Scoring ───────────────────────────────────────
-    # Try to resolve the event immediately; Polymarket markets usually resolve
-    # within seconds of the end date, so this may return None for futures.
-    resolved = fetch_outcome(event_id)
-
-    if resolved is not None:
-        outcome = resolved.outcome
-        bt.logging.info(
-            f"[Resolution] event={event_id[:12]}... resolved → outcome={outcome}"
-        )
-        rewards = get_rewards(
-            self,
-            p_market=market_prob,
-            outcome=outcome,
-            responses=valid_probabilities,
-        )
-        bt.logging.info(
-            f"Valid probs: {[round(p, 4) if p else None for p in valid_probabilities]}"
-        )
-        bt.logging.info(f"Rewards:     {rewards}")
-        self.update_scores(rewards, miner_uids)
-    else:
-        bt.logging.info(
-            f"[Resolution] event={event_id[:12]}... not yet resolved — "
-            "storing for deferred scoring."
-        )
-        # Store the round so it can be scored when the event resolves.
-        # The deferred scoring loop (run separately) will call
-        # fetch_outcome() again and call update_scores() once resolved.
-        if not hasattr(self, "_pending_rounds"):
-            self._pending_rounds = []
-        self._pending_rounds.append({
-            "event_id": event_id,
-            "market_prob": market_prob,
-            "valid_probabilities": valid_probabilities,
-            "miner_uids": miner_uids,
-            "stored_at": int(time.time()),
-        })
-        bt.logging.info(
-            f"  {len(self._pending_rounds)} round(s) awaiting resolution."
-        )
-
-    # ── 6. Flush pending rounds that have since resolved ────────────────────
-    _flush_pending_rounds(self)
-
-    time.sleep(5)
-
-
-def _flush_pending_rounds(self):
-    """
-    Iterate over stored pending rounds and score any that have now resolved.
-    Called at the end of every forward pass so deferred scoring is
-    best-effort without requiring a separate process.
-    """
-    if not hasattr(self, "_pending_rounds") or not self._pending_rounds:
-        return
-
-    still_pending = []
-    for round_data in self._pending_rounds:
-        resolved = fetch_outcome(round_data["event_id"])
-        if resolved is None:
-            still_pending.append(round_data)
-            continue
-
-        bt.logging.info(
-            f"[Deferred] Scoring round for event={round_data['event_id'][:12]}... "
-            f"outcome={resolved.outcome}"
-        )
-        rewards = get_rewards(
-            self,
-            p_market=round_data["market_prob"],
-            outcome=resolved.outcome,
-            responses=round_data["valid_probabilities"],
-        )
-        bt.logging.info(f"  Deferred rewards: {rewards}")
-        self.update_scores(rewards, round_data["miner_uids"])
-
-    self._pending_rounds = still_pending
+    return valid_probs

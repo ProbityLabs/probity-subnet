@@ -27,7 +27,7 @@ import bittensor as bt
 from template.base.validator import BaseValidatorNeuron
 
 # Bittensor Validator Template:
-from template.validator import forward
+from template.validator.forward import forward
 
 
 class Validator(BaseValidatorNeuron):

@@ -148,6 +148,7 @@ class MockDendrite(bt.Dendrite):
                     self._predictions[(axon.hotkey, s.event_id)] = {
                         "p": prob,
                         "nonce": nonce,
+                        "commit_deadline": s.commit_deadline,
                     }
                     data_to_hash = f"{prob}_{nonce}_{s.event_id}_{axon.hotkey}"
                     s.commitment_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
@@ -155,12 +156,16 @@ class MockDendrite(bt.Dendrite):
                 # Handle Reveal phase
                 elif isinstance(s, Reveal):
                     key = (axon.hotkey, s.event_id)
-                    if key in self._predictions:
-                        s.probability = self._predictions[key]["p"]
-                        s.nonce = self._predictions[key]["nonce"]
-                    else:
+                    if key not in self._predictions:
                         s.probability = None
                         s.nonce = None
+                    elif time.time() < self._predictions[key].get("commit_deadline", 0):
+                        # Deadline not yet passed — refuse to reveal
+                        s.probability = None
+                        s.nonce = None
+                    else:
+                        s.probability = self._predictions[key]["p"]
+                        s.nonce = self._predictions[key]["nonce"]
             else:
                 s.dendrite.status_code = 408
                 s.dendrite.status_message = "Timeout"

@@ -80,7 +80,8 @@ class Miner(BaseMinerNeuron):
         # Save securely so we can reveal it later
         self.predictions[synapse.event_id] = {
             "p": prob,
-            "nonce": nonce
+            "nonce": nonce,
+            "commit_deadline": synapse.commit_deadline,
         }
         
         # Create hash
@@ -97,14 +98,25 @@ class Miner(BaseMinerNeuron):
         """
         Reveals the actual probability and nonce for a requested event.
         """
-        if synapse.event_id in self.predictions:
-            synapse.probability = self.predictions[synapse.event_id]["p"]
-            synapse.nonce = self.predictions[synapse.event_id]["nonce"]
-            bt.logging.info(f"Revealed prediction for {synapse.event_id}: p={synapse.probability}, nonce={synapse.nonce}")
-        else:
+        if synapse.event_id not in self.predictions:
             synapse.probability = None
             synapse.nonce = None
             bt.logging.warning(f"No prediction found to reveal for {synapse.event_id}")
+        elif int(time.time()) < self.predictions[synapse.event_id].get("commit_deadline", 0):
+            # Commit window still open — refusing to reveal early prevents front-running
+            synapse.probability = None
+            synapse.nonce = None
+            bt.logging.warning(
+                f"Reveal rejected for {synapse.event_id}: commit deadline not yet passed"
+            )
+        else:
+            pred = self.predictions[synapse.event_id]
+            synapse.probability = pred["p"]
+            synapse.nonce = pred["nonce"]
+            bt.logging.info(
+                f"Revealed prediction for {synapse.event_id}: "
+                f"p={synapse.probability}, nonce={synapse.nonce}"
+            )
         return synapse
 
     async def blacklist_commit(self, synapse: template.protocol.Commit) -> typing.Tuple[bool, str]:
