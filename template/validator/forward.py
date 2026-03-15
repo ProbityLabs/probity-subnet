@@ -29,6 +29,9 @@ async def forward(self):
         self._event_pool = EventPool()
     if not hasattr(self, "_skill_tracker"):
         self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n))
+    else:
+        # Resize if metagraph has grown or shrunk since last save
+        self._skill_tracker.resize(int(self.metagraph.n))
 
     commit_window = getattr(self, "commit_window_seconds", COMMIT_WINDOW_SECONDS)
 
@@ -53,6 +56,7 @@ async def forward(self):
                     event_id=event.event_id,
                     market_prob=event.market_prob,
                     commit_deadline=commit_deadline,
+                    question=event.question,
                 )
                 commit_responses = await self.dendrite(
                     axons=axons,

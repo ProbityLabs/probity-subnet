@@ -47,6 +47,12 @@ class Commit(bt.Synapse):
         description="The Unix timestamp deadline for submitting this commit.",
         frozen=True,
     )
+    question: str = pydantic.Field(
+        "",
+        title="Question",
+        description="The natural-language question miners are asked to forecast.",
+        frozen=True,
+    )
 
     # Output: Optional request output, filled by receiving miner axon.
     commitment_hash: typing.Optional[str] = pydantic.Field(

@@ -20,6 +20,8 @@
 
 import time
 
+import numpy as np
+
 # Bittensor
 import bittensor as bt
 
@@ -28,6 +30,7 @@ from template.base.validator import BaseValidatorNeuron
 
 # Bittensor Validator Template:
 from template.validator.forward import forward
+from template.validator.reward import RollingSkillTracker
 
 
 class Validator(BaseValidatorNeuron):
@@ -45,8 +48,6 @@ class Validator(BaseValidatorNeuron):
         bt.logging.info("load_state()")
         self.load_state()
 
-        # TODO(developer): Anything specific to your use case you can do here
-
     async def forward(self):
         """
         Validator forward pass. Consists of:
@@ -56,8 +57,43 @@ class Validator(BaseValidatorNeuron):
         - Rewarding the miners
         - Updating the scores
         """
-        # TODO(developer): Rewrite this function based on your protocol definition.
         return await forward(self)
+
+    def save_state(self):
+        """Save validator state including rolling skill tracker."""
+        super().save_state()
+
+        if hasattr(self, "_skill_tracker"):
+            data = self._skill_tracker.save()
+            np.savez(
+                self.config.neuron.full_path + "/state_skill.npz",
+                sum_skill=data["sum_skill"],
+                count=data["count"],
+                N0=data["N0"],
+            )
+            bt.logging.info("Saved skill tracker state.")
+
+    def load_state(self):
+        """Load validator state including rolling skill tracker."""
+        try:
+            super().load_state()
+        except Exception:
+            bt.logging.info("No previous validator state found, starting fresh.")
+
+        skill_path = self.config.neuron.full_path + "/state_skill.npz"
+        try:
+            state = np.load(skill_path)
+            self._skill_tracker = RollingSkillTracker.load({
+                "sum_skill": state["sum_skill"].tolist(),
+                "count":     state["count"].tolist(),
+                "N0":        float(state["N0"]),
+            })
+            bt.logging.info(
+                f"Loaded skill tracker: {len(state['sum_skill'])} miners, "
+                f"{int(state['count'].sum())} total predictions."
+            )
+        except Exception:
+            bt.logging.info("No skill tracker state found, starting fresh.")
 
 
 # The main function parses the configuration and runs the validator.

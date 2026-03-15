@@ -24,6 +24,7 @@ from template.validator.reward import get_rewards, RollingSkillTracker, compute_
 
 COMMIT_WINDOW = 1   # seconds — short so demo doesn't wait long
 N_ROUNDS      = 3   # how many events to simulate
+MIN_COMMIT_WINDOW = 1  # mirrors neurons/miner.py — shortened for demo
 
 # ── Colour helpers ───────────────────────────────────────────────────────────
 
@@ -71,6 +72,7 @@ class DemoMiner:
             "p":               prob,
             "nonce":           nonce,
             "commit_deadline": synapse.commit_deadline,
+            "received_at":     int(time.time()),
         }
 
         data_to_hash = f"{prob}_{nonce}_{synapse.event_id}_{self.name}"
@@ -86,8 +88,10 @@ class DemoMiner:
             return None, None
 
         pred = self.predictions[synapse.event_id]
+        earliest_reveal = pred["received_at"] + MIN_COMMIT_WINDOW
+        actual_deadline = max(pred["commit_deadline"], earliest_reveal)
 
-        if time.time() < pred["commit_deadline"]:
+        if time.time() < actual_deadline:
             warn(f"[{self.name}] Refusing reveal — commit deadline not yet passed!")
             return None, None
 

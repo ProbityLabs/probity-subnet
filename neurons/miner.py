@@ -17,9 +17,16 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import hashlib
+import random
 import time
 import typing
 import bittensor as bt
+
+# Minimum seconds between receiving a Commit and allowing a Reveal,
+# regardless of what commit_deadline the validator sends.
+# Prevents a malicious validator from sending a backdated deadline.
+MIN_COMMIT_WINDOW = 20
 
 # Bittensor Miner Template:
 import template
@@ -70,18 +77,19 @@ class Miner(BaseMinerNeuron):
         Receives an event commit request, computes the probability,
         hashes it with a nonce, and returns the hash.
         """
-        import hashlib
-        import random
         # Dummy predictive logic: picking random probability based on market.
         # In a real miner, you'd use models.
         prob = max(0.01, min(0.99, synapse.market_prob + random.uniform(-0.1, 0.1)))
         nonce = str(random.randint(1000000, 9999999))
-        
-        # Save securely so we can reveal it later
+
+        # Save securely so we can reveal it later.
+        # received_at is recorded locally — used to enforce MIN_COMMIT_WINDOW
+        # even if the validator sends a backdated commit_deadline.
         self.predictions[synapse.event_id] = {
-            "p": prob,
-            "nonce": nonce,
+            "p":               prob,
+            "nonce":           nonce,
             "commit_deadline": synapse.commit_deadline,
+            "received_at":     int(time.time()),
         }
         
         # Create hash
@@ -102,21 +110,28 @@ class Miner(BaseMinerNeuron):
             synapse.probability = None
             synapse.nonce = None
             bt.logging.warning(f"No prediction found to reveal for {synapse.event_id}")
-        elif int(time.time()) < self.predictions[synapse.event_id].get("commit_deadline", 0):
-            # Commit window still open — refusing to reveal early prevents front-running
-            synapse.probability = None
-            synapse.nonce = None
-            bt.logging.warning(
-                f"Reveal rejected for {synapse.event_id}: commit deadline not yet passed"
-            )
         else:
             pred = self.predictions[synapse.event_id]
-            synapse.probability = pred["p"]
-            synapse.nonce = pred["nonce"]
-            bt.logging.info(
-                f"Revealed prediction for {synapse.event_id}: "
-                f"p={synapse.probability}, nonce={synapse.nonce}"
-            )
+            # Enforce: reveal only after both the validator's commit_deadline AND
+            # our own minimum window have passed. This protects against a malicious
+            # validator sending a backdated deadline to force an early reveal.
+            earliest_reveal = pred["received_at"] + MIN_COMMIT_WINDOW
+            actual_deadline = max(pred["commit_deadline"], earliest_reveal)
+
+            if int(time.time()) < actual_deadline:
+                synapse.probability = None
+                synapse.nonce = None
+                bt.logging.warning(
+                    f"Reveal rejected for {synapse.event_id}: "
+                    f"deadline not yet passed (earliest={actual_deadline})"
+                )
+            else:
+                synapse.probability = pred["p"]
+                synapse.nonce = pred["nonce"]
+                bt.logging.info(
+                    f"Revealed prediction for {synapse.event_id}: "
+                    f"p={synapse.probability}, nonce={synapse.nonce}"
+                )
         return synapse
 
     async def blacklist_commit(self, synapse: template.protocol.Commit) -> typing.Tuple[bool, str]:
