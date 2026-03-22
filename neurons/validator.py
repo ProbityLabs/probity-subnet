@@ -56,6 +56,7 @@ class Validator(BaseValidatorNeuron):
         ).attach(
             forward_fn=self._handle_commit_submission,
         )
+        self.axon.start()
 
     async def forward(self):
         """

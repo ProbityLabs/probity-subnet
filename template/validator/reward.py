@@ -86,6 +86,9 @@ class RollingSkillTracker:
 # SWPE
 # ---------------------------------------------------------------------------
 
+BETA = 5.0  # softmax temperature — shared by get_rewards and compute_swpe
+
+
 def compute_swpe(
     valid_probs: List[Optional[float]],
     uids: List[int],
@@ -95,16 +98,16 @@ def compute_swpe(
     Skill-Weighted Probability Ensemble.
 
     SWPE = Σ_i [w_i * p_i] / Σ_i w_i
-    where w_i = max(0, rolling_skill[i])
+    where w_i = exp(β * rolling_skill[i]) for all miners (including negative skill).
 
-    Returns None if no miner has positive skill.
+    Returns None if no valid probabilities.
     """
     weighted_sum = 0.0
     weight_total = 0.0
     for prob, uid in zip(valid_probs, uids):
         if prob is None:
             continue
-        w = max(0.0, skill_tracker.get(uid))
+        w = math.exp(BETA * skill_tracker.get(uid))
         weighted_sum += w * prob
         weight_total += w
     if weight_total == 0:
@@ -133,8 +136,6 @@ def get_rewards(
     Otherwise, fall back to per-event skill (original behaviour, for tests
     that don't pass a tracker).
     """
-    beta = 5
-
     # Per-event skills
     per_event_skills: List[Optional[float]] = []
     for p in responses:
@@ -149,7 +150,8 @@ def get_rewards(
         valid_skills = [s for s in per_event_skills if s is not None]
         skill_tracker.update(valid_uids, valid_skills)
 
-    # Compute weights
+    # Compute weights: w_i = exp(β * RollingSkill_i) for all miners with a response.
+    # Miners with no response (None) get weight 0 and are excluded from normalisation.
     weights = []
     for i, skill in enumerate(per_event_skills):
         if skill is None:
@@ -157,8 +159,8 @@ def get_rewards(
             continue
         if skill_tracker is not None and uids is not None:
             rs = skill_tracker.get(uids[i])
-            weights.append(math.exp(beta * rs) if rs > 0 else 0.0)
         else:
-            weights.append(math.exp(beta * skill) if skill > 0 else 0.0)
+            rs = skill
+        weights.append(math.exp(BETA * rs))
 
     return np.array(weights, dtype=np.float32)

@@ -6,7 +6,7 @@ import bittensor as bt
 
 from template.protocol import CommitSubmission, EventInfo, EventList, Reveal
 from template.validator.reward import get_rewards, RollingSkillTracker, compute_swpe
-from template.validator.event_source import fetch_active_events
+from template.validator.event_source import fetch_active_events, _fetch_clob_price
 from template.validator.event_resolver import fetch_outcome
 from template.validator.event_pool import EventPool, EventStage
 
@@ -72,6 +72,15 @@ async def forward(self):
 
     # ── 2. Close commits for past-deadline events ─────────────────────────────
     for pooled in self._event_pool.ready_for_reveal():
+        # Snapshot a fresh market_prob at commit-close time (not ingestion time)
+        # so the scoring baseline reflects the market at the moment miners locked in.
+        fresh_prob = _fetch_clob_price(pooled.event_id)
+        if fresh_prob is not None:
+            self._event_pool.update_market_prob(pooled.event_id, fresh_prob)
+            bt.logging.info(
+                f"[Commits Closed] {pooled.event_id[:12]}... "
+                f"market_prob updated {pooled.market_prob:.4f} → {fresh_prob:.4f}"
+            )
         self._event_pool.close_commits(pooled.event_id, self.metagraph)
         bt.logging.info(
             f"[Commits Closed] {pooled.event_id[:12]}... "

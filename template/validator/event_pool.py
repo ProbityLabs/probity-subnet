@@ -105,6 +105,11 @@ class EventPool:
             and now >= e.market_close_ts - self.REVEAL_BEFORE_CLOSE
         ]
 
+    def update_market_prob(self, event_id: str, market_prob: float) -> None:
+        """Overwrite market_prob with a fresh snapshot (called at commit-window close)."""
+        if event_id in self._events:
+            self._events[event_id].market_prob = market_prob
+
     def close_commits(self, event_id: str, metagraph) -> None:
         """
         Transition OPEN → AWAITING_REVEAL.

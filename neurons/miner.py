@@ -53,6 +53,8 @@ class Miner(BaseMinerNeuron):
         super(Miner, self).__init__(config=config)
         # Store per-event predictions keyed by event_id
         self.predictions = {}
+        # Dendrite for outbound calls to validators (pull model)
+        self.dendrite = bt.Dendrite(wallet=self.wallet)
 
         # Attach only the Reveal handler — in the pull model, the miner
         # actively queries validators for events and submits commitments
@@ -92,11 +94,13 @@ class Miner(BaseMinerNeuron):
             for uid in range(int(self.metagraph.n))
             if self.metagraph.validator_permit[uid] and uid != self.uid
         ]
+        bt.logging.info(f"[Miner] Found {len(validator_axons)} validator(s) in metagraph.")
         if not validator_axons:
             bt.logging.warning("No validators found in metagraph.")
             return
 
         for val_axon in validator_axons:
+            bt.logging.info(f"[Miner] Querying validator {val_axon.hotkey[:12]}... for events.")
             responses = await self.dendrite(
                 axons=[val_axon],
                 synapse=template.protocol.EventList(),
@@ -105,11 +109,23 @@ class Miner(BaseMinerNeuron):
             )
             events = responses[0] if responses else []
             if not events:
+                bt.logging.info(f"[Miner] No active events from {val_axon.hotkey[:12]}...")
                 continue
 
+            bt.logging.info(f"[Miner] Received {len(events)} event(s) from {val_axon.hotkey[:12]}...")
             for event in events:
                 if event.event_id in self.predictions:
-                    continue  # already committed to this event
+                    bt.logging.debug(
+                        f"[Miner] Already committed to {event.event_id[:12]}... — skipping."
+                    )
+                    continue
+
+                bt.logging.info(
+                    f"[Miner] Processing event {event.event_id[:12]}...\n"
+                    f"        question  : {event.question}\n"
+                    f"        market_prob: {event.market_prob:.4f}\n"
+                    f"        deadline  : {event.commit_deadline}"
+                )
 
                 # ── TODO: implement your forecasting logic here ───────────────
                 #
@@ -127,12 +143,17 @@ class Miner(BaseMinerNeuron):
                 #   - Bayesian model trained on historical data
                 #   - Statistical ensemble
                 #   - Market-derived signals with adjustments
-                #   - Agenting aproach that uses tools to gather more info before predicting
+                #   - Agenting approach that uses tools to gather more info before predicting
                 #
-                # Replace None with your model's output:
-                prob: typing.Optional[float] = None
+                # Replace the random placeholder with your model's output:
+                prob: typing.Optional[float] = round(random.uniform(0.05, 0.95), 4)
                 # prob = your_model.predict(event.question, event.market_prob)
                 # ── END TODO ─────────────────────────────────────────────────
+
+                bt.logging.info(
+                    f"[Miner] Forecast for {event.event_id[:12]}...: prob={prob:.4f} "
+                    f"(market baseline={event.market_prob:.4f})"
+                )
 
                 if prob is None:
                     bt.logging.debug(

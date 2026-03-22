@@ -102,7 +102,8 @@ def expire_deadline(validator):
 def pass2_reveal_and_score(validator, resolved=FAKE_RESOLVED):
     """Pass 2: close commits (deadline past) + reveal + score if resolved."""
     with patch("template.validator.forward.fetch_active_events", return_value=[FAKE_EVENT]), \
-         patch("template.validator.forward.fetch_outcome", return_value=resolved):
+         patch("template.validator.forward.fetch_outcome", return_value=resolved), \
+         patch("template.validator.forward._fetch_clob_price", return_value=None):
         run(fwd_module.forward(validator))
 
 
