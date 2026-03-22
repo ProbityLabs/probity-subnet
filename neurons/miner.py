@@ -89,11 +89,25 @@ class Miner(BaseMinerNeuron):
         Miners should implement their forecasting logic in the section marked
         with TODO below. The rest of the protocol handling is taken care of.
         """
+        # Try validators with permit first; fall back to all non-self nodes
+        # on small/new subnets where permits haven't been granted yet.
         validator_axons = [
             self.metagraph.axons[uid]
             for uid in range(int(self.metagraph.n))
             if self.metagraph.validator_permit[uid] and uid != self.uid
         ]
+        if not validator_axons:
+            validator_axons = [
+                self.metagraph.axons[uid]
+                for uid in range(int(self.metagraph.n))
+                if uid != self.uid and self.metagraph.axons[uid].ip != "0.0.0.0"
+            ]
+        # When running on the same machine, override IP to localhost
+        local_mode = getattr(self.config, "local", False)
+        if local_mode:
+            for axon in validator_axons:
+                axon.ip = "127.0.0.1"
+
         bt.logging.info(f"[Miner] Found {len(validator_axons)} validator(s) in metagraph.")
         if not validator_axons:
             bt.logging.warning("No validators found in metagraph.")

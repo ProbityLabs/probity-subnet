@@ -6,7 +6,106 @@ Probity creates a decentralized superforecaster network where emission flows exc
 
 ---
 
-# 🔍 The Calibration Gap
+## Quick Start
+
+### Prerequisites
+
+- Python 3.10+
+- Bittensor CLI (`btcli`)
+
+### Installation
+
+```bash
+git clone https://github.com/your-org/probity-subnet.git
+cd probity-subnet
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+```
+
+### Running the Validator
+
+```bash
+python3 neurons/validator.py \
+  --netuid <NETUID> \
+  --subtensor.network test \
+  --wallet.name <WALLET> \
+  --wallet.hotkey <HOTKEY> \
+  --probity.commit_window 172800
+```
+
+### Running the Miner
+
+```bash
+python3 neurons/miner.py \
+  --netuid <NETUID> \
+  --subtensor.network test \
+  --wallet.name <WALLET> \
+  --wallet.hotkey <HOTKEY>
+```
+
+Use `--local` flag when running miner and validator on the same machine.
+
+### Demo (no network required)
+
+```bash
+python3 scripts/demo_flow.py
+```
+
+Runs the full commit-reveal-score-SWPE flow in-process with live Polymarket events.
+
+### Running Tests
+
+```bash
+pytest tests/test_flow.py tests/test_forward_real.py -v
+```
+
+### Configuration
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--probity.beta` | 5.0 | Softmax temperature for exponential skill weighting |
+| `--probity.N0` | 10.0 | Bayesian prior count for rolling skill smoothing |
+| `--probity.commit_window` | 172800 (48h) | Commit window in seconds |
+
+---
+
+## Architecture
+
+### Pull-Based Protocol
+
+1. **Validator** fetches events from Polymarket and adds them to the event pool
+2. **Miner** queries validator for active events (`EventList` synapse)
+3. **Miner** computes forecast and submits commitment hash (`CommitSubmission` synapse)
+4. After commit window closes, **Validator** sends `Reveal` request to miners
+5. **Validator** verifies hashes, scores miners, computes SWPE, and sets weights on-chain
+
+### Event Lifecycle
+
+```
+OPEN → AWAITING_REVEAL → AWAITING_RESOLUTION → SCORED
+```
+
+### Key Components
+
+| File | Description |
+|------|-------------|
+| `neurons/validator.py` | Validator neuron with axon handlers and state persistence |
+| `neurons/miner.py` | Miner neuron with pull-based commit-reveal |
+| `template/validator/forward.py` | Core forward loop (fetch, close, reveal, score) |
+| `template/validator/reward.py` | Log-loss, rolling skill tracker, SWPE computation |
+| `template/validator/event_pool.py` | Event lifecycle management with persistence |
+| `template/validator/event_source.py` | Polymarket Gamma + CLOB API integration |
+| `template/validator/event_resolver.py` | Market resolution detection |
+| `template/protocol.py` | Synapse definitions (EventList, CommitSubmission, Reveal) |
+| `scripts/demo_flow.py` | Full flow demo with live Polymarket events |
+
+### Digital Commodity: SWPE Oracle
+
+After scoring, the validator produces a **Skill-Weighted Probability Ensemble** (SWPE) — a calibration-weighted consensus probability. These are persisted to `swpe_oracle.jsonl` as the subnet's digital commodity output.
+
+---
+
+# Design
 
 Prediction markets are capital-weighted.
 

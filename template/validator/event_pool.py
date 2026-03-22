@@ -10,6 +10,8 @@ Lifecycle of a single event:
 
 from __future__ import annotations
 
+import json
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -165,3 +167,67 @@ class EventPool:
             f"{counts[EventStage.AWAITING_RESOLUTION]} awaiting_resolution | "
             f"{counts[EventStage.SCORED]} scored"
         )
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save_to_file(self, path: str) -> None:
+        """Persist non-SCORED events to a JSON file so they survive restarts."""
+        serializable = []
+        for e in self._events.values():
+            if e.stage == EventStage.SCORED:
+                continue  # no need to persist already-scored events
+            entry = {
+                "event_id": e.event_id,
+                "question": e.question,
+                "market_prob": e.market_prob,
+                "commit_deadline": e.commit_deadline,
+                "market_close_ts": e.market_close_ts,
+                "pending_hashes": e.pending_hashes,
+                "stage": e.stage.name,
+                "miner_uids": e.miner_uids.tolist() if e.miner_uids is not None else None,
+                "commit_hashes": e.commit_hashes,
+                "valid_probabilities": e.valid_probabilities,
+                "stored_at": e.stored_at,
+            }
+            serializable.append(entry)
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(serializable, f)
+            os.replace(tmp, path)
+        except Exception:
+            pass  # gracefully skip if path is not writable (e.g. in tests)
+
+    @classmethod
+    def load_from_file(cls, path: str, max_scored_keep: int = 50) -> "EventPool":
+        """Restore an EventPool from a JSON file."""
+        pool = cls(max_scored_keep=max_scored_keep)
+        if not os.path.exists(path):
+            return pool
+        try:
+            with open(path) as f:
+                entries = json.load(f)
+        except Exception:
+            return pool
+        for entry in entries:
+            e = PooledEvent(
+                event_id=entry["event_id"],
+                question=entry.get("question", ""),
+                market_prob=entry["market_prob"],
+                commit_deadline=entry["commit_deadline"],
+                market_close_ts=entry.get("market_close_ts", 0),
+                pending_hashes=entry.get("pending_hashes", {}),
+                stage=EventStage[entry["stage"]],
+                miner_uids=(
+                    np.array(entry["miner_uids"], dtype=np.int64)
+                    if entry.get("miner_uids") is not None
+                    else None
+                ),
+                commit_hashes=entry.get("commit_hashes"),
+                valid_probabilities=entry.get("valid_probabilities"),
+                stored_at=entry.get("stored_at", int(time.time())),
+            )
+            pool._events[e.event_id] = e
+        return pool

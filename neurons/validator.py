@@ -33,6 +33,7 @@ from template.protocol import EventList, CommitSubmission
 # Bittensor Validator Template:
 from template.validator.forward import forward, forward_event_list, forward_commit_submission
 from template.validator.reward import RollingSkillTracker
+from template.validator.event_pool import EventPool
 
 
 class Validator(BaseValidatorNeuron):
@@ -75,7 +76,7 @@ class Validator(BaseValidatorNeuron):
         return await forward_commit_submission(self, synapse)
 
     def save_state(self):
-        """Save validator state including rolling skill tracker."""
+        """Save validator state including rolling skill tracker and event pool."""
         super().save_state()
 
         if hasattr(self, "_skill_tracker"):
@@ -88,13 +89,19 @@ class Validator(BaseValidatorNeuron):
             )
             bt.logging.info("Saved skill tracker state.")
 
+        if hasattr(self, "_event_pool"):
+            pool_path = self.config.neuron.full_path + "/event_pool.json"
+            self._event_pool.save_to_file(pool_path)
+            bt.logging.info("Saved event pool state.")
+
     def load_state(self):
-        """Load validator state including rolling skill tracker."""
+        """Load validator state including rolling skill tracker and event pool."""
         try:
             super().load_state()
         except Exception:
             bt.logging.info("No previous validator state found, starting fresh.")
 
+        # Load skill tracker
         skill_path = self.config.neuron.full_path + "/state_skill.npz"
         try:
             state = np.load(skill_path)
@@ -109,6 +116,15 @@ class Validator(BaseValidatorNeuron):
             )
         except Exception:
             bt.logging.info("No skill tracker state found, starting fresh.")
+
+        # Load event pool
+        pool_path = self.config.neuron.full_path + "/event_pool.json"
+        self._event_pool = EventPool.load_from_file(pool_path)
+        n_loaded = len(self._event_pool._events)
+        if n_loaded > 0:
+            bt.logging.info(f"Loaded event pool: {n_loaded} events. {self._event_pool.summary()}")
+        else:
+            bt.logging.info("No event pool state found, starting fresh.")
 
 
 # The main function parses the configuration and runs the validator.

@@ -1,8 +1,7 @@
+bittensor>=10.0
 requests>=2.31
-starlette>=0.30.0
 pydantic>=2
+numpy>=1
 rich>=13
 pytest>=8
-torch>=2
-numpy>=1
 setuptools>=68

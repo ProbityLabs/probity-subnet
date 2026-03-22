@@ -1,4 +1,6 @@
 import hashlib
+import json
+import os
 import time
 from datetime import datetime
 
@@ -14,6 +16,30 @@ from template.validator.event_pool import EventPool, EventStage
 # Override on the validator instance (self.commit_window_seconds) for tests.
 COMMIT_WINDOW_SECONDS = 48 * 3600  # 48 hours
 
+EVENT_FETCH_INTERVAL = 300  # seconds between Polymarket API calls
+SWPE_ORACLE_FILE = "swpe_oracle.jsonl"
+
+
+def _append_swpe_record(base_path: str, event_id: str, question: str,
+                        swpe: float, outcome: int, market_prob: float,
+                        n_miners: int) -> None:
+    """Append a SWPE oracle record to the JSONL file (the 'digital commodity')."""
+    record = {
+        "ts": int(time.time()),
+        "event_id": event_id,
+        "question": question,
+        "swpe": round(swpe, 6),
+        "outcome": outcome,
+        "market_prob": round(market_prob, 6),
+        "n_miners": n_miners,
+    }
+    path = os.path.join(base_path, SWPE_ORACLE_FILE)
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception as exc:
+        bt.logging.warning(f"Failed to write SWPE oracle record: {exc}")
+
 
 def _parse_end_ts(end_date_iso: str) -> int:
     """Parse ISO-8601 end date to unix timestamp. Falls back to 7 days from now."""
@@ -26,12 +52,24 @@ def _parse_end_ts(end_date_iso: str) -> int:
     return int(time.time()) + 7 * 24 * 3600
 
 
+def _get_probity_config(self, key: str, default):
+    """Safely extract a probity config value, returning default if missing or mock."""
+    try:
+        val = getattr(getattr(self.config, "probity", None), key, None)
+        if val is not None and isinstance(val, (int, float)):
+            return val
+    except Exception:
+        pass
+    return default
+
+
 def _init_state(self) -> None:
     """Initialise persistent state on the first forward call."""
     if not hasattr(self, "_event_pool"):
         self._event_pool = EventPool()
     if not hasattr(self, "_skill_tracker"):
-        self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n))
+        N0 = _get_probity_config(self, "N0", 10.0)
+        self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n), N0=N0)
     else:
         self._skill_tracker.resize(int(self.metagraph.n))
 
@@ -47,13 +85,23 @@ async def forward(self):
     """
     _init_state(self)
 
-    commit_window = getattr(self, "commit_window_seconds", COMMIT_WINDOW_SECONDS)
+    # Priority: instance attr (tests) > config > module default
+    commit_window = getattr(self, "commit_window_seconds", None)
+    if commit_window is None:
+        commit_window = int(_get_probity_config(self, "commit_window", COMMIT_WINDOW_SECONDS))
 
-    # ── 1. Add new events ────────────────────────────────────────────────────
-    events = fetch_active_events(limit=5)
-    if not events:
-        bt.logging.warning("Could not fetch live events from Polymarket.")
+    # ── 1. Add new events (throttled to avoid API rate limits) ──────────────
+    now = int(time.time())
+    last_fetch = getattr(self, "_last_event_fetch", 0)
+    if now - last_fetch < EVENT_FETCH_INTERVAL and len(self._event_pool._events) > 0:
+        events = []  # skip fetch, use existing pool
     else:
+        events = fetch_active_events(limit=5)
+        self._last_event_fetch = now
+
+    if not events and len(self._event_pool._events) == 0:
+        bt.logging.warning("Could not fetch live events from Polymarket.")
+    elif events:
         for event in events:
             if event.event_id in self._event_pool:
                 continue
@@ -149,9 +197,25 @@ async def forward(self):
                 f"[SWPE] event={pooled.event_id[:12]}... "
                 f"ensemble={swpe:.4f} | outcome={resolved.outcome}"
             )
+            base_path = getattr(self.config.neuron, "full_path", ".")
+            _append_swpe_record(
+                base_path=base_path,
+                event_id=pooled.event_id,
+                question=pooled.question,
+                swpe=swpe,
+                outcome=resolved.outcome,
+                market_prob=pooled.market_prob,
+                n_miners=sum(1 for p in pooled.valid_probabilities if p is not None),
+            )
 
     bt.logging.info(f"[Pool] {self._event_pool.summary()}")
     self._event_pool.prune()
+
+    # Persist event pool after each forward pass
+    base_path = getattr(self.config.neuron, "full_path", None)
+    if base_path:
+        import os
+        self._event_pool.save_to_file(os.path.join(base_path, "event_pool.json"))
 
 
 async def forward_event_list(self, synapse: EventList) -> EventList:

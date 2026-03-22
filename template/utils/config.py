@@ -142,6 +142,13 @@ def add_miner_args(cls, parser):
     )
 
     parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Connect to validators via 127.0.0.1 (for same-machine testing).",
+        default=False,
+    )
+
+    parser.add_argument(
         "--blacklist.force_validator_permit",
         action="store_true",
         help="If set, we will force incoming requests to have a permit.",
@@ -244,6 +251,26 @@ def add_validator_args(cls, parser):
         type=str,
         help="The name of the project where you are sending the new run.",
         default="opentensor-dev",
+    )
+
+    # ── Probity subnet parameters ──────────────────────────────────────
+    parser.add_argument(
+        "--probity.beta",
+        type=float,
+        help="Softmax temperature for exponential skill weighting.",
+        default=5.0,
+    )
+    parser.add_argument(
+        "--probity.N0",
+        type=float,
+        help="Bayesian prior count for rolling skill smoothing.",
+        default=10.0,
+    )
+    parser.add_argument(
+        "--probity.commit_window",
+        type=int,
+        help="Commit window in seconds (how long miners can submit before reveals).",
+        default=48 * 3600,
     )
 
 
