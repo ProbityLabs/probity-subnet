@@ -1,85 +1,93 @@
 import hashlib
 import time
+from datetime import datetime
 
 import bittensor as bt
 
-from template.protocol import Commit, Reveal
+from template.protocol import CommitSubmission, EventInfo, EventList, Reveal
 from template.validator.reward import get_rewards, RollingSkillTracker, compute_swpe
 from template.validator.event_source import fetch_active_events
 from template.validator.event_resolver import fetch_outcome
-from template.validator.event_pool import EventPool
-from template.utils.uids import get_random_uids
+from template.validator.event_pool import EventPool, EventStage
 
 # How long (seconds) miners have to commit before reveals are sent.
 # Override on the validator instance (self.commit_window_seconds) for tests.
-COMMIT_WINDOW_SECONDS = 30
+COMMIT_WINDOW_SECONDS = 48 * 3600  # 48 hours
 
 
-async def forward(self):
-    """
-    Validator forward pass.
+def _parse_end_ts(end_date_iso: str) -> int:
+    """Parse ISO-8601 end date to unix timestamp. Falls back to 7 days from now."""
+    if end_date_iso:
+        try:
+            dt = datetime.fromisoformat(end_date_iso.replace("Z", "+00:00"))
+            return int(dt.timestamp())
+        except Exception:
+            pass
+    return int(time.time()) + 7 * 24 * 3600
 
-    One pass handles all three event lifecycle stages in parallel:
-      1. Commit   — pick a new event, send Commit synapse to miners
-      2. Reveal   — for events past commit deadline, send Reveal + verify hashes
-      3. Score    — for revealed events whose outcome is now known, score + SWPE
-    """
-    # ── Initialise persistent state ─────────────────────────────────────────
+
+def _init_state(self) -> None:
+    """Initialise persistent state on the first forward call."""
     if not hasattr(self, "_event_pool"):
         self._event_pool = EventPool()
     if not hasattr(self, "_skill_tracker"):
         self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n))
     else:
-        # Resize if metagraph has grown or shrunk since last save
         self._skill_tracker.resize(int(self.metagraph.n))
+
+
+async def forward(self):
+    """
+    Validator forward pass (periodic loop).
+
+    1. Fetch new events from Polymarket → add to pool as OPEN
+    2. Close commits for OPEN events past their deadline → AWAITING_REVEAL
+    3. Send Reveal to committed miners → verify hashes → AWAITING_RESOLUTION
+    4. Score AWAITING_RESOLUTION events whose outcome is known
+    """
+    _init_state(self)
 
     commit_window = getattr(self, "commit_window_seconds", COMMIT_WINDOW_SECONDS)
 
-    miner_uids = get_random_uids(self, k=self.config.neuron.sample_size, exclude=[self.uid])
-    axons = [self.metagraph.axons[uid] for uid in miner_uids]
-
-    # ── 1. Commit Phase ──────────────────────────────────────────────────────
-    if len(miner_uids) == 0:
-        bt.logging.warning("No miners available to query.")
+    # ── 1. Add new events ────────────────────────────────────────────────────
+    events = fetch_active_events(limit=5)
+    if not events:
+        bt.logging.warning("Could not fetch live events from Polymarket.")
     else:
-        events = fetch_active_events(limit=5)
-        if not events:
-            bt.logging.warning("Could not fetch live events from Polymarket.")
-        else:
-            # Add at most one new event per forward pass
-            for event in events:
-                if event.event_id in self._event_pool:
-                    continue
+        for event in events:
+            if event.event_id in self._event_pool:
+                continue
+            commit_deadline = int(time.time()) + commit_window
+            self._event_pool.add_event(
+                event_id=event.event_id,
+                question=event.question,
+                market_prob=event.market_prob,
+                commit_deadline=commit_deadline,
+                market_close_ts=_parse_end_ts(event.end_date_iso),
+            )
+            bt.logging.info(
+                f"[Event] {event.question[:60]} | "
+                f"id={event.event_id[:12]}... | deadline+{commit_window}s"
+            )
 
-                commit_deadline = int(time.time()) + commit_window
-                commit_synapse = Commit(
-                    event_id=event.event_id,
-                    market_prob=event.market_prob,
-                    commit_deadline=commit_deadline,
-                    question=event.question,
-                )
-                commit_responses = await self.dendrite(
-                    axons=axons,
-                    synapse=commit_synapse,
-                    deserialize=True,
-                )
-                self._event_pool.add(
-                    event_id=event.event_id,
-                    question=event.question,
-                    market_prob=event.market_prob,
-                    commit_deadline=commit_deadline,
-                    miner_uids=miner_uids.copy(),
-                    commit_hashes=list(commit_responses),
-                )
-                bt.logging.info(
-                    f"[Commit] {event.question[:60]} | "
-                    f"id={event.event_id[:12]}... | "
-                    f"miners={len(miner_uids)} | deadline+{commit_window}s"
-                )
-                break  # one new event per pass is enough
-
-    # ── 2. Reveal Phase ──────────────────────────────────────────────────────
+    # ── 2. Close commits for past-deadline events ─────────────────────────────
     for pooled in self._event_pool.ready_for_reveal():
+        self._event_pool.close_commits(pooled.event_id, self.metagraph)
+        bt.logging.info(
+            f"[Commits Closed] {pooled.event_id[:12]}... "
+            f"commitments={len(pooled.pending_hashes)}"
+        )
+
+    # ── 3. Reveal Phase ───────────────────────────────────────────────────────
+    for pooled in list(self._event_pool._events.values()):
+        if pooled.stage != EventStage.AWAITING_REVEAL:
+            continue
+
+        if pooled.miner_uids is None or len(pooled.miner_uids) == 0:
+            self._event_pool.mark_revealed(pooled.event_id, [])
+            bt.logging.info(f"[Reveal] {pooled.event_id[:12]}... no committed miners")
+            continue
+
         reveal_axons = [self.metagraph.axons[uid] for uid in pooled.miner_uids]
         reveal_synapse = Reveal(event_id=pooled.event_id)
 
@@ -94,20 +102,17 @@ async def forward(self):
 
         n_valid = sum(1 for p in valid_probs if p is not None)
         bt.logging.info(
-            f"[Reveal] {pooled.event_id[:12]}... "
-            f"valid={n_valid}/{len(valid_probs)}"
+            f"[Reveal] {pooled.event_id[:12]}... valid={n_valid}/{len(valid_probs)}"
         )
 
-    # ── 3. Score + SWPE ──────────────────────────────────────────────────────
+    # ── 4. Score ─────────────────────────────────────────────────────────────
     for pooled in self._event_pool.ready_for_scoring():
         resolved = fetch_outcome(pooled.event_id)
         if resolved is None:
             bt.logging.debug(f"[Score] {pooled.event_id[:12]}... not yet resolved")
             continue
 
-        bt.logging.info(
-            f"[Score] {pooled.event_id[:12]}... outcome={resolved.outcome}"
-        )
+        bt.logging.info(f"[Score] {pooled.event_id[:12]}... outcome={resolved.outcome}")
 
         rewards = get_rewards(
             self,
@@ -125,7 +130,6 @@ async def forward(self):
         self.update_scores(rewards, pooled.miner_uids)
         self._event_pool.mark_scored(pooled.event_id)
 
-        # SWPE — ensemble probability from skill-weighted miners
         swpe = compute_swpe(
             pooled.valid_probabilities,
             pooled.miner_uids.tolist(),
@@ -133,12 +137,56 @@ async def forward(self):
         )
         if swpe is not None:
             bt.logging.info(
-                f"[SWPE]  event={pooled.event_id[:12]}... "
+                f"[SWPE] event={pooled.event_id[:12]}... "
                 f"ensemble={swpe:.4f} | outcome={resolved.outcome}"
             )
 
     bt.logging.info(f"[Pool] {self._event_pool.summary()}")
     self._event_pool.prune()
+
+
+async def forward_event_list(self, synapse: EventList) -> EventList:
+    """
+    Axon handler — pull protocol Step 1.
+    Miners call this to get the list of active events they can predict on.
+    """
+    _init_state(self)
+    active = self._event_pool.get_active_events()
+    synapse.events = [
+        EventInfo(
+            event_id=e.event_id,
+            question=e.question,
+            market_prob=e.market_prob,
+            commit_deadline=e.commit_deadline,
+            reveal_deadline=e.market_close_ts,
+        )
+        for e in active
+    ]
+    bt.logging.debug(f"[EventList] serving {len(synapse.events)} active events")
+    return synapse
+
+
+async def forward_commit_submission(self, synapse: CommitSubmission) -> CommitSubmission:
+    """
+    Axon handler — pull protocol Step 2.
+    Miners call this to submit a commitment hash for an event.
+    """
+    _init_state(self)
+    miner_hotkey = synapse.dendrite.hotkey if synapse.dendrite else None
+    if miner_hotkey is None:
+        synapse.accepted = False
+        return synapse
+    accepted = self._event_pool.add_commitment(
+        event_id=synapse.event_id,
+        miner_hotkey=miner_hotkey,
+        commitment_hash=synapse.commitment_hash,
+    )
+    synapse.accepted = accepted
+    bt.logging.info(
+        f"[CommitSubmission] hotkey={miner_hotkey[:8]}... "
+        f"event={synapse.event_id[:12]}... accepted={accepted}"
+    )
+    return synapse
 
 
 def _verify_hashes(pooled, reveal_responses, axons) -> list:
@@ -156,7 +204,7 @@ def _verify_hashes(pooled, reveal_responses, axons) -> list:
             valid_probs.append(None)
             continue
 
-        data = f"{prob}_{nonce}_{pooled.event_id}_{axon.hotkey}"
+        data = f"{prob}{nonce}{pooled.event_id}{axon.hotkey}"
         expected = hashlib.sha256(data.encode()).hexdigest()
 
         if expected == commit_hash:

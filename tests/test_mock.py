@@ -3,7 +3,7 @@ import asyncio
 import bittensor as bt
 
 from template.mock import MockDendrite, MockMetagraph, MockSubtensor, MockWallet
-from template.protocol import Commit, Reveal
+from template.protocol import Reveal
 
 
 @pytest.mark.parametrize("netuid", [1, 2, 3])
@@ -28,30 +28,6 @@ def test_mock_metagraph(n):
 
 
 @pytest.mark.parametrize("n", [4, 8])
-def test_mock_dendrite_commit(n):
-    wallet = MockWallet()
-    dendrite = MockDendrite(wallet=wallet)
-    subtensor = MockSubtensor(netuid=1, n=n)
-    metagraph = MockMetagraph(netuid=1, subtensor=subtensor)
-    axons = metagraph.axons
-
-    async def run():
-        return await dendrite(
-            axons,
-            synapse=Commit(event_id="test-event-1", market_prob=0.6, commit_deadline=int(__import__("time").time()) - 1),
-            timeout=5,
-            deserialize=True,
-        )
-
-    responses = asyncio.run(run())
-    assert len(responses) == n
-    for resp in responses:
-        assert resp is not None
-        assert isinstance(resp, str)
-        assert len(resp) == 64  # sha256 hex digest length
-
-
-@pytest.mark.parametrize("n", [4, 8])
 def test_mock_dendrite_reveal(n):
     wallet = MockWallet()
     dendrite = MockDendrite(wallet=wallet)
@@ -60,14 +36,15 @@ def test_mock_dendrite_reveal(n):
     axons = metagraph.axons
     event_id = "test-event-reveal"
 
+    # Seed predictions directly (simulating miners having committed)
+    for axon in axons:
+        dendrite._predictions[(axon.hotkey, event_id)] = {
+            "p": 0.65,
+            "nonce": "1234567",
+            "commit_deadline": 0,  # already past — reveal allowed
+        }
+
     async def run():
-        # Must commit first so dendrite stores predictions
-        await dendrite(
-            axons,
-            synapse=Commit(event_id=event_id, market_prob=0.5, commit_deadline=int(__import__("time").time()) - 1),
-            timeout=5,
-            deserialize=True,
-        )
         return await dendrite(
             axons,
             synapse=Reveal(event_id=event_id),
@@ -82,3 +59,37 @@ def test_mock_dendrite_reveal(n):
         assert prob is not None
         assert 0.0 < prob < 1.0
         assert nonce is not None
+
+
+@pytest.mark.parametrize("n", [4, 8])
+def test_mock_dendrite_reveal_blocked_before_deadline(n):
+    """Reveal should return None if commit_deadline has not yet passed."""
+    wallet = MockWallet()
+    dendrite = MockDendrite(wallet=wallet)
+    subtensor = MockSubtensor(netuid=1, n=n)
+    metagraph = MockMetagraph(netuid=1, subtensor=subtensor)
+    axons = metagraph.axons
+    event_id = "test-event-blocked"
+
+    import time
+    for axon in axons:
+        dendrite._predictions[(axon.hotkey, event_id)] = {
+            "p": 0.55,
+            "nonce": "9876543",
+            "commit_deadline": int(time.time()) + 9999,  # far future
+        }
+
+    async def run():
+        return await dendrite(
+            axons,
+            synapse=Reveal(event_id=event_id),
+            timeout=5,
+            deserialize=True,
+        )
+
+    responses = asyncio.run(run())
+    assert len(responses) == n
+    for resp in responses:
+        prob, nonce = resp
+        assert prob is None
+        assert nonce is None

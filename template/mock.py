@@ -1,5 +1,4 @@
 import time
-import hashlib
 import asyncio
 import random
 
@@ -104,16 +103,25 @@ class MockMetagraph:
 
 class MockDendrite(bt.Dendrite):
     """
-    Mock dendrite for testing the Probity commit-reveal flow.
-    Simulates a miner that generates a random probability, commits a hash,
-    and reveals the probability + nonce on request.
+    Mock dendrite for testing the Probity pull model.
+
+    In the pull model:
+    - Miners query the validator's axon for events (EventList synapse).
+    - Miners submit commitments to the validator (CommitSubmission synapse).
+    - The validator pushes Reveal to miners; miners return (probability, nonce).
+
+    This mock only handles Reveal (validator → miner direction).
+    Seed predictions via _predictions before calling reveal:
+        dendrite._predictions[(axon_hotkey, event_id)] = {
+            "p": float, "nonce": str, "commit_deadline": int
+        }
     """
 
     def __init__(self, wallet):
         # bt.Dendrite expects a Wallet or Keypair. Pass the hotkey Keypair directly
         # so self.keypair gets ss58_address AND sign() without needing a full Wallet.
         super().__init__(wallet.hotkey)
-        # Store per-event predictions keyed by (axon_hotkey, event_id)
+        # Predictions keyed by (axon_hotkey, event_id) — seeded by tests or pull_and_submit
         self._predictions: dict = {}
 
     async def forward(
@@ -128,7 +136,7 @@ class MockDendrite(bt.Dendrite):
         if streaming:
             raise NotImplementedError("Streaming not implemented yet.")
 
-        from template.protocol import Commit, Reveal
+        from template.protocol import Reveal
 
         async def single_axon_response(axon):
             start_time = time.time()
@@ -141,20 +149,8 @@ class MockDendrite(bt.Dendrite):
                 s.dendrite.status_code = 200
                 s.dendrite.status_message = "OK"
 
-                # Handle Commit phase
-                if isinstance(s, Commit):
-                    prob = max(0.01, min(0.99, s.market_prob + random.uniform(-0.1, 0.1)))
-                    nonce = str(random.randint(1000000, 9999999))
-                    self._predictions[(axon.hotkey, s.event_id)] = {
-                        "p": prob,
-                        "nonce": nonce,
-                        "commit_deadline": s.commit_deadline,
-                    }
-                    data_to_hash = f"{prob}_{nonce}_{s.event_id}_{axon.hotkey}"
-                    s.commitment_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
-
-                # Handle Reveal phase
-                elif isinstance(s, Reveal):
+                # Handle Reveal phase (validator → miner)
+                if isinstance(s, Reveal):
                     key = (axon.hotkey, s.event_id)
                     if key not in self._predictions:
                         s.probability = None

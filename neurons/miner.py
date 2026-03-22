@@ -1,32 +1,33 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# TODO(developer): Set your name
-# Copyright © 2023 <your name>
+# TODO(developer): Probity
+# Copyright © 2026 Probity
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
-# documentation files (the “Software”), to deal in the Software without restriction, including without limitation
+# documentation files (the "Software"), to deal in the Software without restriction, including without limitation
 # the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software,
 # and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
 # The above copyright notice and this permission notice shall be included in all copies or substantial portions of
 # the Software.
 
-# THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
 # THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
+import asyncio
 import hashlib
 import random
 import time
 import typing
 import bittensor as bt
 
-# Minimum seconds between receiving a Commit and allowing a Reveal,
+# Minimum seconds between receiving a commit request and allowing a Reveal,
 # regardless of what commit_deadline the validator sends.
 # Prevents a malicious validator from sending a backdated deadline.
-MIN_COMMIT_WINDOW = 20
+MIN_COMMIT_WINDOW = 23 * 3600  # 23 hours — safety guard against backdated deadlines
 
 # Bittensor Miner Template:
 import template
@@ -37,19 +38,26 @@ from template.base.miner import BaseMinerNeuron
 
 class Miner(BaseMinerNeuron):
     """
-    Your miner neuron class. You should use this class to define your miner's behavior. In particular, you should replace the forward function with your own logic. You may also want to override the blacklist and priority functions according to your needs.
+    Probity subnet miner.
 
-    This class inherits from the BaseMinerNeuron class, which in turn inherits from BaseNeuron. The BaseNeuron class takes care of routine tasks such as setting up wallet, subtensor, metagraph, logging directory, parsing config, etc. You can override any of the methods in BaseNeuron if you need to customize the behavior.
+    Implements the pull-based commit-reveal protocol:
+      - Periodically queries validators for active events (pull_and_submit).
+      - Submits a commitment hash for each event the miner wants to forecast.
+      - Responds to validator Reveal requests with the original probability and nonce.
 
-    This class provides reasonable default behavior for a miner such as blacklisting unrecognized hotkeys, prioritizing requests based on stake, and forwarding requests to the forward function. If you need to define custom
+    Miners should implement their forecasting logic inside pull_and_submit
+    in the section marked with TODO.
     """
 
     def __init__(self, config=None):
         super(Miner, self).__init__(config=config)
-        self.predictions = {} # Store our predictions temporarily.
+        # Store per-event predictions keyed by event_id
+        self.predictions = {}
 
-        # Re-attach multiple endpoints for Probity
-        # First we clear the default ones
+        # Attach only the Reveal handler — in the pull model, the miner
+        # actively queries validators for events and submits commitments
+        # (see pull_and_submit). The only inbound request is the validator
+        # asking the miner to reveal.
         self.axon.non_blocking_fns = []
         self.axon.forward_fns = {}
         self.axon.blacklist_fns = {}
@@ -57,48 +65,111 @@ class Miner(BaseMinerNeuron):
         self.axon.verify_fns = {}
 
         self.axon.attach(
-            forward_fn=self.forward_commit,
-            blacklist_fn=self.blacklist_commit,
-            priority_fn=self.priority_commit,
-        ).attach(
             forward_fn=self.forward_reveal,
             blacklist_fn=self.blacklist_reveal,
             priority_fn=self.priority_reveal,
         )
 
     async def forward(self, synapse: bt.Synapse) -> bt.Synapse:
-        """Required by ABC. Routing is handled by forward_commit and forward_reveal."""
+        """Required by ABC. Routing is handled by forward_reveal."""
         return synapse
 
-    async def forward_commit(
-        self, synapse: template.protocol.Commit
-    ) -> template.protocol.Commit:
+    async def pull_and_submit(self) -> None:
         """
-        Receives an event commit request, computes the probability,
-        hashes it with a nonce, and returns the hash.
-        """
-        # Dummy predictive logic: picking random probability based on market.
-        # In a real miner, you'd use models.
-        prob = max(0.01, min(0.99, synapse.market_prob + random.uniform(-0.1, 0.1)))
-        nonce = str(random.randint(1000000, 9999999))
+        Pull active events from validators and autonomously submit commitments.
 
-        # Save securely so we can reveal it later.
-        # received_at is recorded locally — used to enforce MIN_COMMIT_WINDOW
-        # even if the validator sends a backdated commit_deadline.
-        self.predictions[synapse.event_id] = {
-            "p":               prob,
-            "nonce":           nonce,
-            "commit_deadline": synapse.commit_deadline,
-            "received_at":     int(time.time()),
-        }
-        
-        # Create hash
-        data_to_hash = f"{prob}_{nonce}_{synapse.event_id}_{self.wallet.hotkey.ss58_address}"
-        commitment_hash = hashlib.sha256(data_to_hash.encode()).hexdigest()
-        
-        synapse.commitment_hash = commitment_hash
-        bt.logging.info(f"Committed prediction for {synapse.event_id}: hash={commitment_hash}")
-        return synapse
+        Steps:
+          1. Find validator axons in the metagraph.
+          2. Query each validator for the list of active events (EventList).
+          3. For each new event, compute a probability forecast and submit a
+             commitment hash (CommitSubmission).
+
+        Miners should implement their forecasting logic in the section marked
+        with TODO below. The rest of the protocol handling is taken care of.
+        """
+        validator_axons = [
+            self.metagraph.axons[uid]
+            for uid in range(int(self.metagraph.n))
+            if self.metagraph.validator_permit[uid] and uid != self.uid
+        ]
+        if not validator_axons:
+            bt.logging.warning("No validators found in metagraph.")
+            return
+
+        for val_axon in validator_axons:
+            responses = await self.dendrite(
+                axons=[val_axon],
+                synapse=template.protocol.EventList(),
+                deserialize=True,
+                timeout=12,
+            )
+            events = responses[0] if responses else []
+            if not events:
+                continue
+
+            for event in events:
+                if event.event_id in self.predictions:
+                    continue  # already committed to this event
+
+                # ── TODO: implement your forecasting logic here ───────────────
+                #
+                # You receive:
+                #   event.event_id    — unique market identifier
+                #   event.question    — natural-language question to forecast
+                #   event.market_prob — current Polymarket probability (baseline)
+                #   event.commit_deadline — Unix ts; must submit before this
+                #
+                # You must produce:
+                #   prob (float) — your probability estimate, strictly in (0, 1)
+                #
+                # Example approaches:
+                #   - LLM-based reasoning on event.question
+                #   - Bayesian model trained on historical data
+                #   - Statistical ensemble
+                #   - Market-derived signals with adjustments
+                #   - Agenting aproach that uses tools to gather more info before predicting
+                #
+                # Replace None with your model's output:
+                prob: typing.Optional[float] = None
+                # prob = your_model.predict(event.question, event.market_prob)
+                # ── END TODO ─────────────────────────────────────────────────
+
+                if prob is None:
+                    bt.logging.debug(
+                        f"[Miner] No forecast for {event.event_id[:12]}... — skipping."
+                    )
+                    continue
+
+                nonce = str(random.randint(1_000_000, 9_999_999))
+                data = f"{prob}{nonce}{event.event_id}{self.wallet.hotkey.ss58_address}"
+                commitment_hash = hashlib.sha256(data.encode()).hexdigest()
+
+                submit_resp = await self.dendrite(
+                    axons=[val_axon],
+                    synapse=template.protocol.CommitSubmission(
+                        event_id=event.event_id,
+                        commitment_hash=commitment_hash,
+                        timestamp=int(time.time()),
+                    ),
+                    deserialize=True,
+                    timeout=12,
+                )
+                accepted = submit_resp[0] if submit_resp else False
+
+                if accepted:
+                    self.predictions[event.event_id] = {
+                        "p": prob,
+                        "nonce": nonce,
+                        "commit_deadline": event.commit_deadline,
+                        "received_at": int(time.time()),
+                    }
+                    bt.logging.info(
+                        f"[Miner] Committed to {event.event_id[:12]}... prob={prob:.4f}"
+                    )
+                else:
+                    bt.logging.warning(
+                        f"[Miner] Commitment rejected for {event.event_id[:12]}..."
+                    )
 
     async def forward_reveal(
         self, synapse: template.protocol.Reveal
@@ -134,50 +205,28 @@ class Miner(BaseMinerNeuron):
                 )
         return synapse
 
-    async def blacklist_commit(self, synapse: template.protocol.Commit) -> typing.Tuple[bool, str]:
-        return await self.blacklist_base(synapse)
-        
-    async def priority_commit(self, synapse: template.protocol.Commit) -> float:
-        return await self.priority_base(synapse)
-
     async def blacklist_reveal(self, synapse: template.protocol.Reveal) -> typing.Tuple[bool, str]:
         return await self.blacklist_base(synapse)
-        
+
     async def priority_reveal(self, synapse: template.protocol.Reveal) -> float:
         return await self.priority_base(synapse)
 
     async def blacklist_base(
         self, synapse: bt.Synapse
-    ) -> typing.Tuple[bool, str]:  
-
+    ) -> typing.Tuple[bool, str]:
         """
-        Determines whether an incoming request should be blacklisted and thus ignored. Your implementation should
-        define the logic for blacklisting requests based on your needs and desired security parameters.
+        Returns (True, reason) to reject a request before it is processed,
+        or (False, reason) to allow it through.
 
-        Blacklist runs before the synapse data has been deserialized (i.e. before synapse.data is available).
-        The synapse is instead contracted via the headers of the request. It is important to blacklist
-        requests before they are deserialized to avoid wasting resources on requests that will be ignored.
+        Applied to all inbound requests (currently only Reveal).
+        Rejects if: missing hotkey, unregistered hotkey, or non-validator
+        when force_validator_permit is enabled.
 
         Args:
-            synapse (template.protocol.Dummy): A synapse object constructed from the headers of the incoming request.
+            synapse (template.protocol.Reveal): The inbound synapse.
 
         Returns:
-            Tuple[bool, str]: A tuple containing a boolean indicating whether the synapse's hotkey is blacklisted,
-                            and a string providing the reason for the decision.
-
-        This function is a security measure to prevent resource wastage on undesired requests. It should be enhanced
-        to include checks against the metagraph for entity registration, validator status, and sufficient stake
-        before deserialization of synapse data to minimize processing overhead.
-
-        Example blacklist logic:
-        - Reject if the hotkey is not a registered entity within the metagraph.
-        - Consider blacklisting entities that are not validators or have insufficient stake.
-
-        In practice it would be wise to blacklist requests from entities that are not validators, or do not have
-        enough stake. This can be checked via metagraph.S and metagraph.validator_permit. You can always attain
-        the uid of the sender via a metagraph.hotkeys.index( synapse.dendrite.hotkey ) call.
-
-        Otherwise, allow the request to be processed further.
+            Tuple[bool, str]: (blacklisted, reason)
         """
 
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
@@ -186,50 +235,40 @@ class Miner(BaseMinerNeuron):
             )
             return True, "Missing dendrite or hotkey"
 
-        # TODO(developer): Define how miners should blacklist requests.
-        uid = self.metagraph.hotkeys.index(synapse.dendrite.hotkey)
-        if (
-            not self.config.blacklist.allow_non_registered
-            and synapse.dendrite.hotkey not in self.metagraph.hotkeys
-        ):
-            # Ignore requests from un-registered entities.
-            bt.logging.trace(
-                f"Blacklisting un-registered hotkey {synapse.dendrite.hotkey}"
-            )
-            return True, "Unrecognized hotkey"
+        hotkey = synapse.dendrite.hotkey
+        if hotkey not in self.metagraph.hotkeys:
+            if not self.config.blacklist.allow_non_registered:
+                bt.logging.trace(f"Blacklisting un-registered hotkey {hotkey}")
+                return True, "Unrecognized hotkey"
+            return False, "Hotkey recognized!"
+
+        uid = self.metagraph.hotkeys.index(hotkey)
 
         if self.config.blacklist.force_validator_permit:
-            # If the config is set to force validator permit, then we should only allow requests from validators.
             if not self.metagraph.validator_permit[uid]:
                 bt.logging.warning(
-                    f"Blacklisting a request from non-validator hotkey {synapse.dendrite.hotkey}"
+                    f"Blacklisting a request from non-validator hotkey {hotkey}"
                 )
                 return True, "Non-validator hotkey"
 
         bt.logging.trace(
-            f"Not Blacklisting recognized hotkey {synapse.dendrite.hotkey}"
+            f"Not Blacklisting recognized hotkey {hotkey}"
         )
         return False, "Hotkey recognized!"
 
     async def priority_base(self, synapse: bt.Synapse) -> float:
         """
-        The priority function determines the order in which requests are handled. More valuable or higher-priority
-        requests are processed before others. You should design your own priority mechanism with care.
+        Returns a priority score for an inbound request. Higher = processed first.
 
-        This implementation assigns priority to incoming requests based on the calling entity's stake in the metagraph.
+        Uses the caller's stake in the metagraph as the priority score, so
+        higher-stake validators are served before lower-stake ones when
+        multiple Reveal requests arrive simultaneously.
 
         Args:
-            synapse (template.protocol.Dummy): The synapse object that contains metadata about the incoming request.
+            synapse (template.protocol.Reveal): The inbound synapse.
 
         Returns:
-            float: A priority score derived from the stake of the calling entity.
-
-        Miners may receive messages from multiple entities at once. This function determines which request should be
-        processed first. Higher values indicate that the request should be processed first. Lower values indicate
-        that the request should be processed later.
-
-        Example priority logic:
-        - A higher stake results in a higher priority value.
+            float: Priority score (caller's stake).
         """
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
             bt.logging.warning(
@@ -250,9 +289,13 @@ class Miner(BaseMinerNeuron):
         return priority
 
 
-# This is the main function, which runs the miner.
-if __name__ == "__main__":
+async def _run():
     with Miner() as miner:
         while True:
             bt.logging.info(f"Miner running... {time.time()}")
-            time.sleep(5)
+            await miner.pull_and_submit()
+            await asyncio.sleep(60)  # pull every 60 seconds
+
+
+if __name__ == "__main__":
+    asyncio.run(_run())
