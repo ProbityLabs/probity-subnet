@@ -1,0 +1,7 @@
+bittensor>=10.0
+requests>=2.31
+pydantic>=2
+numpy>=1
+rich>=13
+pytest>=8
+setuptools>=68
