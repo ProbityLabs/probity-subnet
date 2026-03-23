@@ -62,38 +62,23 @@ def is_resolved(condition_id: str) -> bool:
     return result is not None
 
 
-def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
-    """
-    Fetch the resolution outcome of a Polymarket market.
-
-    Returns a ResolvedEvent if the market is resolved, else None.
-
-    The CLOB market object contains a ``tokens`` list; the resolved token
-    will have ``"winner": true``.  If the CLOB doesn't expose that flag yet
-    we fall back to the Gamma API ``resolution`` field.
-    """
-    # --- Try CLOB first ---
+def _fetch_clob_outcome(condition_id: str) -> Optional[int]:
+    """Query CLOB for resolution outcome. Returns 1 (YES), 0 (NO), or None."""
     try:
         data = _clob_get(f"/markets/{condition_id}")
     except Exception as exc:
         logger.error("CLOB fetch failed for %s: %s", condition_id, exc)
         return None
 
-    tokens = data.get("tokens", [])
-
-    # CLOB marks resolved tokens with {"winner": true}
-    for token in tokens:
+    for token in data.get("tokens", []):
         if token.get("winner") is True:
             outcome_str = str(token.get("outcome", "")).lower()
-            outcome = 1 if outcome_str in ("yes", "1") else 0
-            return ResolvedEvent(
-                event_id=condition_id,
-                outcome=outcome,
-                winning_token_id=token.get("token_id", ""),
-                question=data.get("question", ""),
-            )
+            return 1 if outcome_str in ("yes", "1") else 0
+    return None
 
-    # --- Fallback: Gamma API ``resolution`` field ---
+
+def _fetch_gamma_outcome(condition_id: str) -> Optional[int]:
+    """Query Gamma API for resolution outcome. Returns 1 (YES), 0 (NO), or None."""
     try:
         markets = _gamma_get(
             "/markets",
@@ -103,24 +88,104 @@ def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
         for m in market_list:
             if (m.get("conditionId") or m.get("condition_id")) != condition_id:
                 continue
+
+            # Check explicit resolution field first
             resolution = str(m.get("resolution") or "").lower()
             if resolution in ("yes", "1"):
-                return ResolvedEvent(
-                    event_id=condition_id,
-                    outcome=1,
-                    winning_token_id="",
-                    question=m.get("question", ""),
-                )
+                return 1
             if resolution in ("no", "0"):
-                return ResolvedEvent(
-                    event_id=condition_id,
-                    outcome=0,
-                    winning_token_id="",
-                    question=m.get("question", ""),
-                )
-    except Exception as exc:
-        logger.debug("Gamma resolution fallback failed for %s: %s", condition_id, exc)
+                return 0
 
+            # Fallback: outcomePrices + umaResolutionStatus
+            # outcomePrices like ["1","0"] means first outcome won;
+            # only trust this when umaResolutionStatus confirms resolved.
+            uma_status = str(m.get("umaResolutionStatus") or "").lower()
+            if uma_status != "resolved":
+                continue
+
+            outcome_prices = m.get("outcomePrices", [])
+            if isinstance(outcome_prices, str):
+                import json as _json
+                try:
+                    outcome_prices = _json.loads(outcome_prices)
+                except Exception:
+                    outcome_prices = []
+
+            outcomes = m.get("outcomes", [])
+            if isinstance(outcomes, str):
+                import json as _json
+                try:
+                    outcomes = _json.loads(outcomes)
+                except Exception:
+                    outcomes = []
+
+            # Find which outcome has price "1" (the winner)
+            for price, label in zip(outcome_prices, outcomes):
+                try:
+                    if float(price) == 1.0:
+                        label_lower = str(label).lower()
+                        if label_lower in ("yes", "1"):
+                            return 1
+                        if label_lower in ("no", "0"):
+                            return 0
+                        # Non-binary outcome (e.g. team name) — check position
+                        idx = outcomes.index(label)
+                        return 1 if idx == 0 else 0
+                except (ValueError, IndexError):
+                    pass
+    except Exception as exc:
+        logger.debug("Gamma resolution fetch failed for %s: %s", condition_id, exc)
+    return None
+
+
+def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
+    """
+    Fetch the resolution outcome of a Polymarket market.
+
+    Returns a ResolvedEvent only when **both** CLOB and Gamma APIs agree on the
+    outcome (dual-source verification per whitepaper §5.2). If either source
+    is unavailable or they disagree, returns None to wait for consensus.
+    """
+    clob_outcome = _fetch_clob_outcome(condition_id)
+    gamma_outcome = _fetch_gamma_outcome(condition_id)
+
+    if clob_outcome is not None and gamma_outcome is not None:
+        if clob_outcome == gamma_outcome:
+            # Both sources agree — resolution confirmed
+            question = ""
+            try:
+                data = _clob_get(f"/markets/{condition_id}")
+                question = data.get("question", "")
+                # Extract winning token id
+                for token in data.get("tokens", []):
+                    if token.get("winner") is True:
+                        return ResolvedEvent(
+                            event_id=condition_id,
+                            outcome=clob_outcome,
+                            winning_token_id=token.get("token_id", ""),
+                            question=question,
+                        )
+            except Exception:
+                pass
+            # Fallback: no winning token from CLOB but both agree on outcome
+            return ResolvedEvent(
+                event_id=condition_id,
+                outcome=clob_outcome,
+                winning_token_id="",
+                question=question,
+            )
+        else:
+            logger.warning(
+                "Resolution mismatch for %s: CLOB=%s, Gamma=%s — waiting for consensus",
+                condition_id, clob_outcome, gamma_outcome,
+            )
+            return None
+
+    # Only one source available — not enough for dual-source confirmation
+    available = "CLOB" if clob_outcome is not None else ("Gamma" if gamma_outcome is not None else "none")
+    logger.debug(
+        "Dual-source not met for %s: only %s available", condition_id, available,
+    )
     return None
 
 

@@ -14,6 +14,10 @@ from template.validator.event_pool import EventPool, EventStage
 # Override on the validator instance (self.commit_window_seconds) for tests.
 COMMIT_WINDOW_SECONDS = 48 * 3600  # 48 hours
 
+# How often (seconds) to fetch new events from Polymarket.
+# Whitepaper §3.1: validators ingest new events every 6 hours.
+EVENT_FETCH_INTERVAL = 6 * 3600  # 6 hours
+
 
 def _parse_end_ts(end_date_iso: str) -> int:
     """Parse ISO-8601 end date to unix timestamp. Falls back to 7 days from now."""
@@ -34,6 +38,8 @@ def _init_state(self) -> None:
         self._skill_tracker = RollingSkillTracker(n=int(self.metagraph.n))
     else:
         self._skill_tracker.resize(int(self.metagraph.n))
+    if not hasattr(self, "_last_event_fetch"):
+        self._last_event_fetch = 0  # epoch — forces fetch on first call
 
 
 async def forward(self):
@@ -49,10 +55,21 @@ async def forward(self):
 
     commit_window = getattr(self, "commit_window_seconds", COMMIT_WINDOW_SECONDS)
 
-    # ── 1. Add new events ────────────────────────────────────────────────────
-    events = fetch_active_events(limit=5)
+    # ── 1. Add new events (rate-limited to every 6 hours) ───────────────────
+    fetch_interval = getattr(self, "event_fetch_interval", EVENT_FETCH_INTERVAL)
+    now = int(time.time())
+    if now - self._last_event_fetch < fetch_interval:
+        bt.logging.debug(
+            f"[Fetch] Skipping event fetch — next in "
+            f"{fetch_interval - (now - self._last_event_fetch)}s"
+        )
+        events = []
+    else:
+        events = fetch_active_events(limit=5)
+        self._last_event_fetch = now
+
     if not events:
-        bt.logging.warning("Could not fetch live events from Polymarket.")
+        pass  # no new events to add this cycle
     else:
         for event in events:
             if event.event_id in self._event_pool:
@@ -64,6 +81,7 @@ async def forward(self):
                 market_prob=event.market_prob,
                 commit_deadline=commit_deadline,
                 market_close_ts=_parse_end_ts(event.end_date_iso),
+                resolution_criteria=getattr(event, "resolution_criteria", ""),
             )
             bt.logging.info(
                 f"[Event] {event.question[:60]} | "
@@ -168,6 +186,7 @@ async def forward_event_list(self, synapse: EventList) -> EventList:
             market_prob=e.market_prob,
             commit_deadline=e.commit_deadline,
             reveal_deadline=e.market_close_ts,
+            resolution_criteria=e.resolution_criteria,
         )
         for e in active
     ]

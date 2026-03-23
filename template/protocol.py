@@ -14,6 +14,7 @@ class EventInfo(pydantic.BaseModel):
     market_prob: float
     commit_deadline: int   # Unix ts — submit commitments before this
     reveal_deadline: int   # Unix ts — reveal window opens at this time
+    resolution_criteria: str = ""  # How the market resolves
 
 
 class EventList(bt.Synapse):

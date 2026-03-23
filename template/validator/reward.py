@@ -163,4 +163,9 @@ def get_rewards(
             rs = skill
         weights.append(math.exp(BETA * rs))
 
-    return np.array(weights, dtype=np.float32)
+    weights = np.array(weights, dtype=np.float32)
+    # Normalise: w_hat_i = w_i / Σ_j w_j  (whitepaper §4.3)
+    total = weights.sum()
+    if total > 0:
+        weights = weights / total
+    return weights

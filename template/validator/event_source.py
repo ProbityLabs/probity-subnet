@@ -27,6 +27,7 @@ class EventRecord:
     question: str          # Human-readable question
     market_prob: float     # Current best probability (0–1)
     end_date_iso: str      # ISO-8601 resolution date
+    resolution_criteria: str = ""  # How the market resolves (from Polymarket description)
     raw: dict = field(default_factory=dict, repr=False)
 
 
@@ -163,6 +164,7 @@ def fetch_active_events(
             question=m.get("question", ""),
             market_prob=round(market_prob, 6),
             end_date_iso=m.get("endDate") or m.get("end_date_iso") or "",
+            resolution_criteria=m.get("description") or m.get("resolution_source") or "",
             raw=m,
         ))
 

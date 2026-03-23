@@ -32,6 +32,7 @@ class PooledEvent:
     market_prob: float
     commit_deadline: int          # Unix ts; no new commitments accepted after this
     market_close_ts: int          # Unix ts; reveal phase opens 24h before this
+    resolution_criteria: str = "" # How the market resolves
     # While OPEN: hotkey → commitment_hash (miners push commitments to validator)
     pending_hashes: Dict[str, str] = field(default_factory=dict)
     stage: EventStage = EventStage.OPEN
@@ -62,6 +63,7 @@ class EventPool:
         market_prob: float,
         commit_deadline: int,
         market_close_ts: int,
+        resolution_criteria: str = "",
     ) -> None:
         """Add a new event in OPEN stage (miners can now submit commitments)."""
         self._events[event_id] = PooledEvent(
@@ -70,6 +72,7 @@ class EventPool:
             market_prob=market_prob,
             commit_deadline=commit_deadline,
             market_close_ts=market_close_ts,
+            resolution_criteria=resolution_criteria,
         )
 
     def get_active_events(self) -> List[PooledEvent]:
