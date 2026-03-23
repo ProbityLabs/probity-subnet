@@ -62,17 +62,8 @@ def is_resolved(condition_id: str) -> bool:
     return result is not None
 
 
-def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
-    """
-    Fetch the resolution outcome of a Polymarket market.
-
-    Returns a ResolvedEvent if the market is resolved, else None.
-
-    The CLOB market object contains a ``tokens`` list; the resolved token
-    will have ``"winner": true``.  If the CLOB doesn't expose that flag yet
-    we fall back to the Gamma API ``resolution`` field.
-    """
-    # --- Try CLOB first ---
+def _fetch_clob_outcome(condition_id: str) -> Optional[ResolvedEvent]:
+    """Check CLOB API for resolution. Returns ResolvedEvent or None."""
     try:
         data = _clob_get(f"/markets/{condition_id}")
     except Exception as exc:
@@ -80,8 +71,6 @@ def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
         return None
 
     tokens = data.get("tokens", [])
-
-    # CLOB marks resolved tokens with {"winner": true}
     for token in tokens:
         if token.get("winner") is True:
             outcome_str = str(token.get("outcome", "")).lower()
@@ -92,8 +81,11 @@ def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
                 winning_token_id=token.get("token_id", ""),
                 question=data.get("question", ""),
             )
+    return None
 
-    # --- Fallback: Gamma API ``resolution`` field ---
+
+def _fetch_gamma_outcome(condition_id: str) -> Optional[ResolvedEvent]:
+    """Check Gamma API for resolution. Returns ResolvedEvent or None."""
     try:
         markets = _gamma_get(
             "/markets",
@@ -119,9 +111,39 @@ def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
                     question=m.get("question", ""),
                 )
     except Exception as exc:
-        logger.debug("Gamma resolution fallback failed for %s: %s", condition_id, exc)
-
+        logger.debug("Gamma resolution fetch failed for %s: %s", condition_id, exc)
     return None
+
+
+def fetch_outcome(condition_id: str) -> Optional[ResolvedEvent]:
+    """
+    Fetch the resolution outcome of a Polymarket market.
+
+    Returns a ResolvedEvent only if at least two independent sources agree
+    on the outcome (whitepaper §7.2 Step 4). Disputed resolutions (sources
+    disagree) are temporarily excluded by returning None.
+
+    Sources:
+      1. Polymarket CLOB API (token winner flag)
+      2. Polymarket Gamma API (resolution field)
+    """
+    clob_result = _fetch_clob_outcome(condition_id)
+    gamma_result = _fetch_gamma_outcome(condition_id)
+
+    # Both sources must confirm resolution
+    if clob_result is None or gamma_result is None:
+        return None
+
+    # Both sources must agree on the outcome
+    if clob_result.outcome != gamma_result.outcome:
+        logger.warning(
+            "Disputed resolution for %s: CLOB=%d, Gamma=%d — excluding",
+            condition_id, clob_result.outcome, gamma_result.outcome,
+        )
+        return None
+
+    # Sources agree — return the CLOB result (has richer metadata)
+    return clob_result
 
 
 def wait_for_resolution(
