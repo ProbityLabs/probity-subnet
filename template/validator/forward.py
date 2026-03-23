@@ -16,7 +16,7 @@ from template.validator.event_pool import EventPool, EventStage
 # Override on the validator instance (self.commit_window_seconds) for tests.
 COMMIT_WINDOW_SECONDS = 48 * 3600  # 48 hours
 
-EVENT_FETCH_INTERVAL = 300  # seconds between Polymarket API calls
+EVENT_FETCH_INTERVAL = 21600  # seconds between Polymarket API calls (6 hours per whitepaper §7.5)
 SWPE_ORACLE_FILE = "swpe_oracle.jsonl"
 
 
