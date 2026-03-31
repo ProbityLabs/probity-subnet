@@ -1,6 +1,5 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# TODO(developer): Probity
 # Copyright © 2026 Probity
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
@@ -311,7 +310,6 @@ class Miner(BaseMinerNeuron):
             )
             return 0.0
 
-        # TODO(developer): Define how miners should prioritize requests.
         caller_uid = self.metagraph.hotkeys.index(
             synapse.dendrite.hotkey
         )  # Get the caller index.

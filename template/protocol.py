@@ -1,6 +1,6 @@
 # The MIT License (MIT)
 # Copyright © 2023 Yuma Rao
-# Copyright © 2023 <your name>
+# Copyright © 2026 Probity
 
 import typing
 import pydantic
