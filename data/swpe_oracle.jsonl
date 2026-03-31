@@ -1,0 +1,10 @@
+{"ts": 1774933716, "event_id": "0xabc1def200001", "question": "Will BTC exceed $150k before July 2026?", "swpe": 0.204657, "outcome": 0, "market_prob": 0.22, "n_miners": 10}
+{"ts": 1774937316, "event_id": "0xabc1def200002", "question": "Will the Fed cut rates in Q2 2026?", "swpe": 0.637175, "outcome": 1, "market_prob": 0.61, "n_miners": 10}
+{"ts": 1774940916, "event_id": "0xabc1def200003", "question": "Will ETH/BTC ratio exceed 0.06 by June 2026?", "swpe": 0.170548, "outcome": 0, "market_prob": 0.18, "n_miners": 10}
+{"ts": 1774944516, "event_id": "0xabc1def200004", "question": "Will Solana TVL exceed $20B by May 2026?", "swpe": 0.466916, "outcome": 1, "market_prob": 0.45, "n_miners": 10}
+{"ts": 1774948116, "event_id": "0xabc1def200005", "question": "Will SEC approve spot ETH ETF options by April 2026?", "swpe": 0.740299, "outcome": 1, "market_prob": 0.72, "n_miners": 10}
+{"ts": 1774951716, "event_id": "0xabc1def200006", "question": "Will Polymarket monthly volume exceed $3B in March 2026?", "swpe": 0.370165, "outcome": 0, "market_prob": 0.38, "n_miners": 10}
+{"ts": 1774955316, "event_id": "0xabc1def200007", "question": "Will Bitcoin dominance drop below 55% by June 2026?", "swpe": 0.375125, "outcome": 1, "market_prob": 0.33, "n_miners": 10}
+{"ts": 1774958916, "event_id": "0xabc1def200008", "question": "Will Nvidia stock exceed $200 by May 2026?", "swpe": 0.616158, "outcome": 1, "market_prob": 0.58, "n_miners": 10}
+{"ts": 1774962516, "event_id": "0xabc1def200009", "question": "Will US CPI fall below 2.5% in Q2 2026?", "swpe": 0.375521, "outcome": 0, "market_prob": 0.41, "n_miners": 10}
+{"ts": 1774966116, "event_id": "0xabc1def20000a", "question": "Will Elon Musk post 400+ tweets in any week of April 2026?", "swpe": 0.155342, "outcome": 0, "market_prob": 0.15, "n_miners": 10}

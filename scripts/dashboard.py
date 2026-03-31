@@ -736,6 +736,21 @@ body {
   padding: 40px 20px;
 }
 
+.content-box {
+  background: rgba(10, 14, 23, 0.75);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(6,182,212,0.1);
+  border-radius: 32px;
+  padding: 60px 80px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+@media (max-width: 600px) {
+  .content-box { padding: 40px 24px; border-radius: 24px; }
+}
+
 .logo-wrap {
   width: 96px; height: 96px;
   border-radius: 24px;
@@ -849,40 +864,42 @@ h1 {
 </div>
 
 <div class="content">
-  <div class="logo-wrap">
-    <img src="/static/logo.png" alt="Probity">
-  </div>
-
-  <h1>Probity</h1>
-  <p class="tagline">
-    A decentralized superforecaster network on Bittensor.<br>
-    Skill-weighted probability intelligence that outperforms market consensus.
-  </p>
-  <div class="subnet-badge">BITTENSOR SUBNET 290 &bull; TESTNET</div>
-
-  <a href="/dashboard" class="enter-btn">
-    Enter Dashboard
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M5 12h14M12 5l7 7-7 7"/>
-    </svg>
-  </a>
-
-  <div class="stats-row">
-    <div class="stat">
-      <div class="stat-val" id="lp-events">-</div>
-      <div class="stat-label">Events Scored</div>
+  <div class="content-box">
+    <div class="logo-wrap">
+      <img src="/static/logo.png" alt="Probity">
     </div>
-    <div class="stat">
-      <div class="stat-val" id="lp-miners">-</div>
-      <div class="stat-label">Active Miners</div>
-    </div>
-    <div class="stat">
-      <div class="stat-val" id="lp-winrate">-</div>
-      <div class="stat-label">SWPE Win Rate</div>
-    </div>
-    <div class="stat">
-      <div class="stat-val" id="lp-edge">-</div>
-      <div class="stat-label">Avg Edge vs Market</div>
+
+    <h1>Probity</h1>
+    <p class="tagline">
+      A decentralized superforecaster network on Bittensor.<br>
+      Skill-weighted probability intelligence that outperforms market consensus.
+    </p>
+    <div class="subnet-badge">BITTENSOR SUBNET 290 &bull; TESTNET</div>
+
+    <a href="/dashboard" class="enter-btn">
+      Enter Dashboard
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 12h14M12 5l7 7-7 7"/>
+      </svg>
+    </a>
+
+    <div class="stats-row">
+      <div class="stat">
+        <div class="stat-val" id="lp-events">-</div>
+        <div class="stat-label">Events Scored</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="lp-miners">-</div>
+        <div class="stat-label">Active Miners</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="lp-winrate">-</div>
+        <div class="stat-label">SWPE Win Rate</div>
+      </div>
+      <div class="stat">
+        <div class="stat-val" id="lp-edge">-</div>
+        <div class="stat-label">Avg Edge vs Market</div>
+      </div>
     </div>
   </div>
 </div>

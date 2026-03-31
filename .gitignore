@@ -219,3 +219,7 @@ state_skill.npz
 event_pool.json
 skill_tracker.json
 swpe_oracle.jsonl
+
+# Exception: bundled demo data for Vercel dashboard
+!data/skill_tracker.json
+!data/swpe_oracle.jsonl
