@@ -8,8 +8,47 @@ Emission flows exclusively to persistent probabilistic outperformance versus mar
 
 ---
 
+## Testnet Deployment Evidence
+
+Probity is live on Bittensor testnet (netuid 290) with 10 miners and 3 validators.
+
+### Metagraph — 13 Registered Nodes
+
+![Metagraph](evidence/metagraph.png)
+
+### Validator Logs — Event Ingestion, Forward Pass, State Persistence
+
+![Validator Logs](evidence/validator.png)
+
+### Miner Logs — Pull Events, Compute Forecast, Submit Commitment Hash
+
+![Miner Logs](evidence/miner.png)
+
+### set_weights — On-Chain Weight Submission
+
+![set_weights](evidence/set_weights.png)
+
+### Incentive Mechanism — Scoring Pipeline Output
+
+![Demo Flow](evidence/demo_flow.png)
+
+The screenshot above shows the **production scoring pipeline** (`template/validator/reward.py`) running end-to-end via `scripts/demo_flow.py`. This is not a separate implementation — it imports and executes the exact same `RollingSkillTracker`, `compute_skill()`, `compute_swpe()`, `get_rewards()`, and `EventPool` used by the live validator.
+
+The only difference from the live testnet is the input: real Polymarket events require 48+ hours to complete the full commit-reveal-resolve cycle, so the demo uses simulated event outcomes to demonstrate the scoring behavior in seconds. The math and code path are identical.
+
+Key observations:
+- **BetaMiner** (accurate forecaster) earns positive rolling skill (+0.0034) and the highest weight
+- **DeltaMiner** (poor forecaster) earns negative rolling skill (-0.0192) and the lowest weight
+- **GammaMiner** (mirrors market exactly) earns zero skill — confirming that copying the market yields no reward
+- SWPE ensemble output is closer to the true outcome than the raw market price
+
+This is reproducible — run `PYTHONPATH=. python scripts/demo_flow.py` to verify.
+
+---
+
 ## Table of Contents
 
+- [Testnet Deployment Evidence](#testnet-deployment-evidence)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
 - [Setup Instructions](#setup-instructions)
