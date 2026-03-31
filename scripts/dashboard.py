@@ -637,8 +637,276 @@ setInterval(loadDashboard, 15000);
 </html>"""
 
 
+@app.get("/static/bg.png")
+def serve_bg():
+    bg_path = os.path.join(SCRIPT_DIR, "bg.png")
+    if os.path.exists(bg_path):
+        return FileResponse(bg_path, media_type="image/png")
+    # Return 404 — CSS fallback gradient will handle it
+    from fastapi.responses import Response
+    return Response(status_code=404)
+
+
+LANDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Probity — Decentralized Superforecaster Network</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0e17;
+  --cyan: #06b6d4;
+  --green: #10b981;
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* Background: image if available, CSS fallback otherwise */
+.bg {
+  position: fixed; inset: 0; z-index: 0;
+  background:
+    url('/static/bg.png') center/cover no-repeat,
+    radial-gradient(ellipse at 20% 50%, rgba(6,182,212,0.08) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 20%, rgba(139,92,246,0.06) 0%, transparent 50%),
+    radial-gradient(ellipse at 50% 80%, rgba(16,185,129,0.05) 0%, transparent 50%),
+    var(--bg);
+}
+
+/* Animated grid overlay */
+.grid-overlay {
+  position: fixed; inset: 0; z-index: 1;
+  background-image:
+    linear-gradient(rgba(6,182,212,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(6,182,212,0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+  animation: gridMove 20s linear infinite;
+}
+@keyframes gridMove {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(60px, 60px); }
+}
+
+/* Floating particles */
+.particles {
+  position: fixed; inset: 0; z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+.particle {
+  position: absolute;
+  width: 3px; height: 3px;
+  background: var(--cyan);
+  border-radius: 50%;
+  opacity: 0;
+  animation: float linear infinite;
+}
+.particle:nth-child(1) { left: 10%; animation-duration: 12s; animation-delay: 0s; }
+.particle:nth-child(2) { left: 25%; animation-duration: 15s; animation-delay: 2s; }
+.particle:nth-child(3) { left: 40%; animation-duration: 10s; animation-delay: 4s; }
+.particle:nth-child(4) { left: 55%; animation-duration: 14s; animation-delay: 1s; }
+.particle:nth-child(5) { left: 70%; animation-duration: 11s; animation-delay: 3s; }
+.particle:nth-child(6) { left: 85%; animation-duration: 13s; animation-delay: 5s; }
+.particle:nth-child(7) { left: 15%; animation-duration: 16s; animation-delay: 6s; width: 2px; height: 2px; }
+.particle:nth-child(8) { left: 60%; animation-duration: 9s; animation-delay: 7s; width: 4px; height: 4px; background: var(--green); }
+@keyframes float {
+  0% { bottom: -10px; opacity: 0; }
+  10% { opacity: 0.6; }
+  90% { opacity: 0.6; }
+  100% { bottom: 110vh; opacity: 0; }
+}
+
+/* Content */
+.content {
+  position: relative; z-index: 2;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  min-height: 100vh;
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.logo-wrap {
+  width: 96px; height: 96px;
+  border-radius: 24px;
+  overflow: hidden;
+  margin-bottom: 32px;
+  box-shadow:
+    0 0 40px rgba(6,182,212,0.2),
+    0 0 80px rgba(6,182,212,0.1);
+  animation: logoPulse 4s ease-in-out infinite;
+}
+@keyframes logoPulse {
+  0%, 100% { box-shadow: 0 0 40px rgba(6,182,212,0.2), 0 0 80px rgba(6,182,212,0.1); }
+  50% { box-shadow: 0 0 60px rgba(6,182,212,0.3), 0 0 120px rgba(6,182,212,0.15); }
+}
+.logo-wrap img { width: 100%; height: 100%; object-fit: contain; }
+
+h1 {
+  font-size: 56px;
+  font-weight: 800;
+  letter-spacing: -1px;
+  background: linear-gradient(135deg, #fff 0%, var(--cyan) 50%, var(--green) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  margin-bottom: 16px;
+}
+
+.tagline {
+  font-size: 20px;
+  color: var(--text-dim);
+  max-width: 600px;
+  line-height: 1.6;
+  margin-bottom: 12px;
+}
+
+.subnet-badge {
+  display: inline-block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--cyan);
+  background: rgba(6,182,212,0.1);
+  border: 1px solid rgba(6,182,212,0.25);
+  padding: 6px 16px;
+  border-radius: 20px;
+  margin-bottom: 48px;
+}
+
+.enter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 40px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: 'Inter', sans-serif;
+  color: #0a0e17;
+  background: linear-gradient(135deg, var(--cyan), var(--green));
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.3s ease;
+  box-shadow: 0 4px 24px rgba(6,182,212,0.3);
+}
+.enter-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(6,182,212,0.4);
+}
+.enter-btn svg {
+  width: 20px; height: 20px;
+  transition: transform 0.3s ease;
+}
+.enter-btn:hover svg { transform: translateX(4px); }
+
+/* Stats row */
+.stats-row {
+  display: flex;
+  gap: 48px;
+  margin-top: 64px;
+  padding-top: 32px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+}
+.stat { text-align: center; }
+.stat-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 24px; font-weight: 700; color: #fff;
+}
+.stat-label {
+  font-size: 11px; color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-top: 4px;
+}
+
+@media (max-width: 600px) {
+  h1 { font-size: 36px; }
+  .tagline { font-size: 16px; }
+  .stats-row { flex-direction: column; gap: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="bg"></div>
+<div class="grid-overlay"></div>
+<div class="particles">
+  <div class="particle"></div><div class="particle"></div>
+  <div class="particle"></div><div class="particle"></div>
+  <div class="particle"></div><div class="particle"></div>
+  <div class="particle"></div><div class="particle"></div>
+</div>
+
+<div class="content">
+  <div class="logo-wrap">
+    <img src="/static/logo.png" alt="Probity">
+  </div>
+
+  <h1>Probity</h1>
+  <p class="tagline">
+    A decentralized superforecaster network on Bittensor.<br>
+    Skill-weighted probability intelligence that outperforms market consensus.
+  </p>
+  <div class="subnet-badge">BITTENSOR SUBNET 290 &bull; TESTNET</div>
+
+  <a href="/dashboard" class="enter-btn">
+    Enter Dashboard
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12h14M12 5l7 7-7 7"/>
+    </svg>
+  </a>
+
+  <div class="stats-row">
+    <div class="stat">
+      <div class="stat-val" id="lp-events">-</div>
+      <div class="stat-label">Events Scored</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="lp-miners">-</div>
+      <div class="stat-label">Active Miners</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="lp-winrate">-</div>
+      <div class="stat-label">SWPE Win Rate</div>
+    </div>
+    <div class="stat">
+      <div class="stat-val" id="lp-edge">-</div>
+      <div class="stat-label">Avg Edge vs Market</div>
+    </div>
+  </div>
+</div>
+
+<script>
+fetch('/api/status').then(r=>r.json()).then(s=>{
+  document.getElementById('lp-events').textContent = s.total_events_scored;
+  document.getElementById('lp-miners').textContent = s.total_miners;
+  document.getElementById('lp-winrate').textContent = s.swpe_win_rate + '%';
+  const e = (s.avg_edge*100).toFixed(1);
+  document.getElementById('lp-edge').textContent = (s.avg_edge>=0?'+':'') + e + '%';
+}).catch(()=>{});
+</script>
+</body>
+</html>"""
+
+
 @app.get("/", response_class=HTMLResponse)
-def index():
+def landing():
+    return LANDING_HTML
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard_page():
     return DASHBOARD_HTML
 
 
