@@ -209,3 +209,13 @@ __marimo__/
 
 note.txt
 .claude
+
+# Zone.Identifier files (Windows/WSL artifact)
+*:Zone.Identifier
+
+# Validator/miner runtime state
+state.npz
+state_skill.npz
+event_pool.json
+skill_tracker.json
+swpe_oracle.jsonl

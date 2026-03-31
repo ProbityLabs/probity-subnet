@@ -211,11 +211,18 @@ async def forward(self):
     bt.logging.info(f"[Pool] {self._event_pool.summary()}")
     self._event_pool.prune()
 
-    # Persist event pool after each forward pass
+    # Persist event pool and skill tracker after each forward pass
     base_path = getattr(self.config.neuron, "full_path", None)
     if base_path:
         import os
         self._event_pool.save_to_file(os.path.join(base_path, "event_pool.json"))
+        try:
+            skill_state = self._skill_tracker.save()
+            skill_state["hotkeys"] = list(self.metagraph.hotkeys)
+            with open(os.path.join(base_path, "skill_tracker.json"), "w") as f:
+                json.dump(skill_state, f, indent=2)
+        except Exception as exc:
+            bt.logging.warning(f"Failed to save skill tracker: {exc}")
 
 
 async def forward_event_list(self, synapse: EventList) -> EventList:

@@ -5,3 +5,5 @@ numpy>=1
 rich>=13
 pytest>=8
 setuptools>=68
+fastapi>=0.104
+uvicorn>=0.24
